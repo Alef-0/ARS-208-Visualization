@@ -20,6 +20,7 @@ def send_configuration_message(dic : sg.Window, connection : Can_Connection):
     values.append(dic['CHECK_QUALITY'])
 
     data = c200(*values)
+    print("Enviando algo")
     # Long way
     if dic['send_1'] or dic['send_all']:
         message = connection.packet_struct.pack(8, 0, 0x200, 0, data.to_bytes(8), 1)

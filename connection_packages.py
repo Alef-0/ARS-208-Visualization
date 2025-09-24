@@ -8,6 +8,7 @@ def create_200_radar_configuration(ok_distance, distance, ok_radarpower, radarpo
 									ok_qual, quality
 								   ):
 	raw = 0x0
+	
 	# Distance
 	raw += ok_distance << 56 
 	raw += distance << 46 # Treshold de Max Distance de (196 - 1200) / 2
@@ -59,12 +60,12 @@ def read_201_radar_state(package : bytearray):
 def read_701_cluster_list(package : bytearray):
 	raw = int.from_bytes(package, "big")
 
-	rcs = raw & 0xFF; 		raw = raw >> 8
-	DynProp = raw & 0x07;	raw = raw >> 3 + 2
-	vrel_lat = raw & 0x1FF; raw = raw >> 9
-	vrel_lon = raw & 0x3FF; raw = raw >> 10;
-	dist_lat = raw & 0x3FF; raw = raw >> 10 + 1;
-	dist_lon = raw & 0x1FFF;raw = raw >> 13
+	rcs = raw & 0xFF; 			raw = raw >> 8
+	DynProp = raw & 0x07;		raw = raw >> 3 + 2
+	vrel_lat = raw & 0x1FF; 	raw = raw >> 9
+	vrel_lon = raw & 0x3FF; 	raw = raw >> 10;
+	dist_lat = raw & 0x3FF; 	raw = raw >> 10 + 1;
+	dist_lon = raw & 0x1FFF;	raw = raw >> 13
 	ID = raw & 0xFF;
 
 	# Conversão de coisas
@@ -72,4 +73,13 @@ def read_701_cluster_list(package : bytearray):
 	new_lat = dist_lat * 0.2 + (-102.3) # +- 102
 	new_vlong = vrel_lon * 0.25 + (-128) # +- 128
 	return new_long, new_lat, DynProp
+
+def read_702_quality_info(package : bytearray):
+	raw = int.from_bytes(package, "big")
+	
+	ambig_state = raw 	& 0x7; 	raw = raw >> 3
+	invalid_state = raw & 0x1F;	raw = raw >> 5
+	PDH0 = raw & 0x7
+
+	return ambig_state, invalid_state, PDH0
 
