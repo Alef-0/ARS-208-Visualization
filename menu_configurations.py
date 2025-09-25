@@ -52,8 +52,8 @@ class Configurations:
         title_location=sg.TITLE_LOCATION_LEFT)
 
         self.column1 = sg.Column([
-            [sg.Checkbox("Radar Power", expand_x=True, key="CHECK_RPW",default=True), sg.Push(), sg.Combo(self.POWER, self.POWER[0], font=self.FONT, size=15, key="RPW", readonly=True), sg.Push()],
-            [sg.Checkbox("RCS Treshold", expand_x=True, key="CHECK_RCS",default=True),  sg.Combo(self.RCS, self.RCS[0], font=self.FONT, size=16, key="RCS", readonly=True), sg.Push()],
+            [sg.Checkbox("Radar Power", expand_x=True, key="CHECK_RPW",default=True), sg.Push(), sg.Combo(self.POWER, self.POWER[3], font=self.FONT, size=15, key="RPW", readonly=True), sg.Push()],
+            [sg.Checkbox("RCS Treshold", expand_x=True, key="CHECK_RCS",default=True),  sg.Combo(self.RCS, self.RCS[1], font=self.FONT, size=16, key="RCS", readonly=True), sg.Push()],
         ])
         self.column2 = sg.Column([
             [sg.Checkbox("Output Power", expand_x=True, key="CHECK_OUT",default=True),sg.Push(), sg.Combo(self.OUTPUT, self.OUTPUT[2], font=self.FONT, size=15, key="OUT", readonly=True), sg.Push()],
@@ -64,7 +64,8 @@ class Configurations:
             # Distancia baseada no que o radar no modo consegue alcançar
             [sg.Checkbox("Max Distance", expand_x=True, key="CHECK_DISTANCE",default=True),  sg.Push(), sg.Slider((196, 260), 100, orientation="h", resolution=1, key="DISTANCE", size=(40, 20)), sg.Push()],
             [self.column1, sg.VerticalSeparator(), self.column2],
-            [sg.Button("Send"), self.choices,  sg.VerticalSeparator(), sg.Button("Open conn", key="connection", button_color=("white", "red"), size=(10)), sg.Text("DISCONNECTED", key="status")]
+            [sg.Button("Send"), self.choices,  sg.VerticalSeparator(), sg.Button("Open conn", key="connection", button_color=("white", "red"), size=(10)), sg.Text("DISCONNECTED", key="status")],
+            [sg.Button("SAVE in Non Volatile Memory", key="save_nvm", expand_x=True, button_color=("black", "white"))]
         ], title_location=sg.TITLE_LOCATION_TOP, pad=(0,20))
 
     def create_filter_list(self):

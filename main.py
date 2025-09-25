@@ -13,7 +13,7 @@ from connection_packages import Clusters_messages
 from graph_filter import Filter_graph
 from graph_draw import Graph_radar
 
-def send_configuration_message(dic : sg.Window, connection : Can_Connection):
+def send_configuration_message(dic : sg.Window, connection : Can_Connection, save_volatile):
     values = []
     values.append(dic['CHECK_DISTANCE'])
     values.append(int(dic["DISTANCE"] / 2) )
@@ -26,7 +26,7 @@ def send_configuration_message(dic : sg.Window, connection : Can_Connection):
     values.append(1)
     values.append(dic['CHECK_QUALITY'])
 
-    data = c200(*values)
+    data = c200(*values, save_volatile)
     print("Enviando algo")
     # Long way
     if dic['send_1'] or dic['send_all']:
@@ -49,7 +49,27 @@ def threat_201_message(channel, bytes, config : Configurations):
     quality = ["No", "Ok"][SendQualityCfg]
 
     config.change_radar(channel, [distance, radar, output, rcs, quality])
+
+def check_popup():
+    layout = [
+        [sg.Text("Digite [Alohomora] para confirmar salvar permanentemente nos radares!", justification="center")],
+        [sg.Input("", key="passwd", expand_x=True, justification="center")],
+        [sg.Push(),sg.Ok(), sg.Cancel(), sg.Push()]
+    ]
+    window = sg.Window("PASSWORD", layout)
+    result = False
+    while True:
+        events, values = window.read()
+        match events:
+            case sg.WIN_CLOSED: return False
+            case "Ok": result = (values['passwd'] == "Alohomora"); break
+            case "Cancel": break
     
+    window.close()
+    return result
+
+    
+  
 if __name__ == "__main__":
     font = ("Helvetica", 12) 
     sg.set_options(font=font)
@@ -65,18 +85,26 @@ if __name__ == "__main__":
 
     while True:
         event, values = config.read()
-        if      event == sg.WINDOW_CLOSED: break
+        if event == sg.WINDOW_CLOSED: break
 
         # Parte do Menu
         match event:
             case "connection": 
                 connection.change_connection()
                 config.change_connection(connection.connected)
+                graph.close()
             case "Send":
-                if config.connected: send_configuration_message(values, connection)
+                if config.connected: send_configuration_message(values, connection, False)
+                config.window["save_nvm"].update(button_color=("black", "white"))
             case s if re.match(r"^filter", s):
                 filter.update_values(event, values)
             case sg.TIMEOUT_EVENT: pass
+            case "save_nvm": 
+                result = check_popup()
+                if result:  config.window["save_nvm"].update(button_color=("white", "green"))
+                else:       config.window["save_nvm"].update(button_color=("white", "red"))
+
+                if config.connected: send_configuration_message(values, connection, result)
             case _: pass
         
         # Parte da conexão

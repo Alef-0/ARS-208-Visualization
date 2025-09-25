@@ -118,3 +118,7 @@ class Graph_radar():
             
         cv.imshow("RADAR", new_img)
         cv.waitKey(1)
+
+    def close(self):
+        cv.destroyAllWindows()
+        cv.waitKey(1)

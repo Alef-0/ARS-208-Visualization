@@ -32,7 +32,7 @@ class Clusters_messages():
 
 def create_200_radar_configuration(ok_distance, distance, ok_radarpower, radarpower, 
 								    ok_output, output, ok_rcs, rcs,
-									ok_qual, quality
+									ok_qual, quality, save_nvm
 								   ):
 	raw = 0x0
 	
@@ -51,6 +51,9 @@ def create_200_radar_configuration(ok_distance, distance, ok_radarpower, radarpo
 	# External
 	raw += ok_qual << 60
 	raw += quality << 18
+	# Saving in volatile
+	raw += save_nvm << 63
+	raw += save_nvm << 23
 
 	return raw
 
