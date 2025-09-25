@@ -5,7 +5,10 @@ from time import sleep
 import re
 
 from connection_packages import read_201_radar_state as r201
+from connection_packages import read_701_cluster_list as r701
+from connection_packages import read_702_quality_info as r702
 from connection_packages import create_200_radar_configuration as c200
+
 from graph_filter import Filter_graph
 
 def send_configuration_message(dic : sg.Window, connection : Can_Connection):
@@ -54,28 +57,39 @@ if __name__ == "__main__":
     event, values = config.read()
     filter = Filter_graph(values)
     
+    # teste_id_701, teste_id_702 = [], []
+
     while True:
-        events, values = config.read()
-        if      events == sg.WINDOW_CLOSED: break
-        elif    events != sg.TIMEOUT_EVENT: pass; print(events, values)
+        event, values = config.read()
+        if      event == sg.WINDOW_CLOSED: break
+        elif    event == sg.TIMEOUT_EVENT: pass; 
 
         # Parte do Menu
-        match events:
+        match event:
             case "connection": 
                 connection.change_connection()
                 config.change_connection(connection.connected)
             case "Send":
                 if config.connected: send_configuration_message(values, connection)
             case s if re.match(r"^filter", s):
-                print("CHANGED FILTER")
+                filter.update_values(event, values)
             case _: pass
         
         # Parte da conexão
         if (not connection.connected): continue
+        # print("CHEGOU AQUI")
         connection.read_chunk()
         while (connection.can_create_can()):
             message  = connection.create_package()
         # Tratar da Conexão
-            # if message.canId == 0x702: print("RECEBEU")
+            if message.canChannel != 2: continue # Filtrar mensagens do filtro 2
             match message.canId:
                 case 0x201: threat_201_message(message.canChannel, message.canData, config)
+                case 0x600: 
+                    pass
+                    # if teste_id_701 and teste_id_702: print(max(teste_id_701), max(teste_id_702))
+                    # teste_id_701.clear(); teste_id_702.clear()
+                case 0x701:
+                    things = r701(message.canData); #teste_id_701.append(things[0])
+                case 0x702:
+                    things = r702(message.canData); #teste_id_702.append(things[0])

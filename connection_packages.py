@@ -72,14 +72,20 @@ def read_701_cluster_list(package : bytearray):
 	new_long = dist_lon * 0.2 + (-500) # de -500 -> 1338.2
 	new_lat = dist_lat * 0.2 + (-102.3) # +- 102
 	new_vlong = vrel_lon * 0.25 + (-128) # +- 128
-	return new_long, new_lat, DynProp
+	return ID, new_long, new_lat, DynProp
 
 def read_702_quality_info(package : bytearray):
 	raw = int.from_bytes(package, "big")
-	
+	# print(hex(raw))
+	raw = raw >> 24 # Começa no 4° byte
+
 	ambig_state = raw 	& 0x7; 	raw = raw >> 3
 	invalid_state = raw & 0x1F;	raw = raw >> 5
-	PDH0 = raw & 0x7
+	PDH0 = raw & 0x7; raw = raw >> 3
+	raw = raw >> 21 # Pula para o id
+	ID = raw
+	# print(hex(raw), "later")
+	
 
-	return ambig_state, invalid_state, PDH0
+	return ID, ambig_state, invalid_state, PDH0
 

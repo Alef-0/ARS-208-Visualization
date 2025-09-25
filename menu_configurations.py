@@ -67,8 +67,8 @@ class Configurations:
         ], justification="center")
         
         self.slider_pdh = sg.Column([
-            [sg.Push(), sg.Text("PDH - False Alarm Probability %"), sg.Push()],
-            [sg.Slider((0, 7),disable_number_display=True, default_value=1, orientation='h', tick_interval=1, expand_x=True, enable_events=True, key="filter_phd")],
+            [sg.Push(), sg.Text("PDH - False Alarm Probability %\nZero is invalid", justification="center"), sg.Push()],
+            [sg.Slider((1, 7),disable_number_display=True, default_value=1, orientation='h', tick_interval=1, expand_x=True, enable_events=True, key="filter_phd")],
             [sg.Text("[0, 1 = 25, 2 = 50, 3 = 75, 4 = 90, 5 = 99...]", expand_x=True, justification="center")]
         ], justification="center")
 

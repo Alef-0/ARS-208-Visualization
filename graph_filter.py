@@ -21,20 +21,26 @@ class Filter_graph:
         # Criar a ordem de tudo
         self.dyn_order = filter_keys[0:8]
         self.phd_order = filter_keys[8]
-        self.ambig_order = filter_keys[9:13]
-        self.cluster_order = filter_keys[13:]
+        self.ambg_order = filter_keys[9:13]
+        self.inv_order = filter_keys[13:]
         
         # Criar os valores para filtrar
-        self.dyn = []; self.phd = None; self.ambig = []; self.cluster = []
+        self.dyn = []; self.phd = None; self.ambg = []; self.inv = []
         
         for keys in self.dyn_order:     self.dyn.append(values[keys])
-        self.phd = values[self.phd_order]
-        for keys in self.ambig_order:   self.ambig.append(values[keys])
-        for keys in self.cluster_order: self.cluster.append(values[keys])
+        self.phd = int(values[self.phd_order])
+        for keys in self.ambg_order:   self.ambg.append(values[keys])
+        for keys in self.inv_order: self.inv.append(values[keys])
 
     def update_values(self, event : str, values : dict):
         # Ver qual o tipo
+        print("ENTROU", event)
         if "dyn" in event: self.dyn[self.dyn_order.index(event)] = values[event]
-        self.phd[event] = values[event]
-        if "ambg" in event: self.ambig[self.ambig_order.index(event)] = values[event]
-        if "inv" in event: self.cluster[self.cluster_order.index(event)] = values[event]
+        if "phd" in event: self.phd = int(values[event])
+        if "ambg" in event: self.ambg[self.ambg_order.index(event)] = values[event]
+        if "inv" in event: self.inv[self.inv_order.index(event)] = values[event]; 
+    
+    def allowed(self, dyn, phd, ambg, inv):
+        return all([
+            self.dyn[dyn], self.phd <= phd, self.ambg[ambg], self.inv[inv]
+        ])
