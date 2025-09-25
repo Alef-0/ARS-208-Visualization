@@ -73,7 +73,7 @@ class Configurations:
                 sg.Checkbox("Moving", default=True, enable_events=True, key="filter_dyn_move"),                     sg.Button("", button_color="#FF0000", disabled=True), 
                 sg.Checkbox("Stationary", default=True, enable_events=True, key="filter_dyn_stationary"),           sg.Button("", button_color="#FF7B00", disabled=True), 
                 sg.Checkbox("Oncoming", default=True, enable_events=True, key="filter_dyn_oncoming"),               sg.Button("", button_color="#FFE600", disabled=True), 
-                sg.Checkbox("Stationary Candidate",default=True, enable_events=True, key="filter_dyn_candidate"),   sg.Button("", button_color="#00FF00", disabled=True), 
+                sg.Checkbox("Stationary Candidate",default=False, enable_events=True, key="filter_dyn_candidate"),   sg.Button("", button_color="#00FF00", disabled=True), 
             sg.Push()],
             [sg.Push(), 
                 sg.Checkbox("Unknown",default=True, enable_events=True, key="filter_dyn_unknown"),                  sg.Button("", button_color="#0000FF", disabled=True), 

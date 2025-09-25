@@ -53,6 +53,7 @@ class Filter_graph:
 
     def filter_points(self, messages : Clusters_messages):
         all_x, all_y, colors = [], [], []
+        erro = False
         for i in range(messages.max_amount):
             try: 
                 allow = self.allowed(messages.dyn[i], messages.pdh[i], messages.ambg[i], messages.inv[i])
@@ -61,7 +62,8 @@ class Filter_graph:
                 colors.append(CODES[messages.dyn[i]])
             except KeyError:
                 print(f"Deu erro com a chave {i}")
-        
+                erro = True
+        if erro: print("-----------")
         return all_x, all_y, colors
             
             

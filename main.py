@@ -93,10 +93,8 @@ if __name__ == "__main__":
                 case 0x600: 
                     # print(message_collection.dyn, len(message_collection.dyn))
                     x, y, colors = filter.filter_points(message_collection)
-                    graph.show_points(x,y, colors)
-                    
+                    graph.show_points(x,y, colors) 
                     message_collection.clear()
-                    print("----------------------")
                     # if teste_id_701 and teste_id_702: print(max(teste_id_701), max(teste_id_702))
                     # teste_id_701.clear(); teste_id_702.clear()
                 case 0x701:
