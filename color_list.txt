@@ -1,8 +1,0 @@
-text_color="#FF0000"
-text_color="#FF7B00"
-text_color="#FFE600"
-text_color="#00FF00"
-text_color="#0000FF"
-text_color="#00FFFF"
-text_color="#8400FF"
-text_color="#000000"

@@ -64,7 +64,7 @@ class Can_Connection:
 
     def send_message(self, raw : bytes): 
         sent = self.sock.send(raw)
-        time.sleep(0.5)
+        time.sleep(0.5) # necessário para a vector registar o pacote
         
         
 

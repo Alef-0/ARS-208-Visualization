@@ -2,9 +2,11 @@ from menu_configurations import Configurations
 from connection_communication import Can_Connection, can_data
 import FreeSimpleGUI as sg
 from time import sleep
+import re
 
 from connection_packages import read_201_radar_state as r201
 from connection_packages import create_200_radar_configuration as c200
+from graph_filter import Filter_graph
 
 def send_configuration_message(dic : sg.Window, connection : Can_Connection):
     values = []
@@ -49,6 +51,8 @@ if __name__ == "__main__":
 
     config = Configurations()
     connection = Can_Connection()
+    event, values = config.read()
+    filter = Filter_graph(values)
     
     while True:
         events, values = config.read()
@@ -62,6 +66,8 @@ if __name__ == "__main__":
                 config.change_connection(connection.connected)
             case "Send":
                 if config.connected: send_configuration_message(values, connection)
+            case s if re.match(r"^filter", s):
+                print("CHANGED FILTER")
             case _: pass
         
         # Parte da conexão

@@ -9,20 +9,17 @@ class Configurations:
     def __init__(self):
         # Tem que colocar as configurações primeiro
         sg.set_options(font=self.FONT)
-        sg.theme("Default")
+        sg.theme("SystemDefaultForReal")
         
         # Criar divisões especiais
         self.create_radar_division()
         self.create_options()
         self.create_filter_list()
-        
-        self.layout = [
-        [self.FRAME],
-        [sg.Push(), self.options, sg.Push()],
-        [self.filter]
-        ]
 
+        self.layout = [ [self.FRAME], [sg.Push(), self.options, sg.Push()], [self.filter]]
         self.window = sg.Window("Configurations Menu", self.layout, finalize=True)
+        
+        #Configurações adicionais
         self.centralize_combos()
         self.connected = False
 
@@ -56,54 +53,60 @@ class Configurations:
     def create_filter_list(self):
         self.dynprop = sg.Column([
             [sg.Push(), 
-                sg.Checkbox("Moving", default=True),                sg.Button("", button_color="#FF0000", disabled=True), 
-                sg.Checkbox("Stationary", default=True),            sg.Button("", button_color="#FF7B00", disabled=True), 
-                sg.Checkbox("Oncoming", default=True),              sg.Button("", button_color="#FFE600", disabled=True), 
-                sg.Checkbox("Stationary Candidate",default=True),   sg.Button("", button_color="#00FF00", disabled=True), 
+                sg.Checkbox("Moving", default=True, enable_events=True, key="filter_dyn_move"),                     sg.Button("", button_color="#FF0000", disabled=True), 
+                sg.Checkbox("Stationary", default=True, enable_events=True, key="filter_dyn_stationary"),           sg.Button("", button_color="#FF7B00", disabled=True), 
+                sg.Checkbox("Oncoming", default=True, enable_events=True, key="filter_dyn_oncoming"),               sg.Button("", button_color="#FFE600", disabled=True), 
+                sg.Checkbox("Stationary Candidate",default=True, enable_events=True, key="filter_dyn_candidate"),   sg.Button("", button_color="#00FF00", disabled=True), 
             sg.Push()],
             [sg.Push(), 
-                sg.Checkbox("Unknown",default=True),                sg.Button("", button_color="#0000FF", disabled=True), 
-                sg.Checkbox("Crossing Stationary", default=True),   sg.Button("", button_color="#00FFFF", disabled=True), 
-                sg.Checkbox("Crossing Moving", default=True),       sg.Button("", button_color="#8400FF", disabled=True), 
-                sg.Checkbox("Stopped", default=True),               sg.Button("", button_color="#000000", disabled=True), 
+                sg.Checkbox("Unknown",default=True, enable_events=True, key="filter_dyn_unknown"),                  sg.Button("", button_color="#0000FF", disabled=True), 
+                sg.Checkbox("Crossing Stationary", default=True, enable_events=True, key="filter_dyn_crossstat"),   sg.Button("", button_color="#00FFFF", disabled=True), 
+                sg.Checkbox("Crossing Moving", default=True, enable_events=True, key="filter_dyn_crossmove"),       sg.Button("", button_color="#8400FF", disabled=True), 
+                sg.Checkbox("Stopped", default=True, enable_events=True, key="filter_dyn_stopped"),                 sg.Button("", button_color="#000000", disabled=True), 
             sg.Push()],
         ], justification="center")
         
         self.slider_pdh = sg.Column([
-            [sg.Push(), sg.Text("PDH Confidence Limit"), sg.Push()],
-            [sg.Slider((0, 7),disable_number_display=True, default_value=1, orientation='h', tick_interval=1, expand_x=True)],
-            [sg.Text("[0 = 00, 1 = 25, 2 = 50, 3 = 75, 4 = 90, 5 = 99...]", expand_x=True, justification="center")]
+            [sg.Push(), sg.Text("PDH - False Alarm Probability %"), sg.Push()],
+            [sg.Slider((0, 7),disable_number_display=True, default_value=1, orientation='h', tick_interval=1, expand_x=True, enable_events=True, key="filter_phd")],
+            [sg.Text("[0, 1 = 25, 2 = 50, 3 = 75, 4 = 90, 5 = 99...]", expand_x=True, justification="center")]
         ], justification="center")
 
         self.cluster_ambg = sg.Column([
             [sg.Push(), sg.Text("Ambiguitity State"), sg.Push()],
-            [sg.Push(), sg.Checkbox("Ambiguous") , sg.Checkbox("Staggered Ramp"), sg.Push()],
-            [sg.Push(), sg.Checkbox("Unambiguous", default=True), sg.Checkbox("Stationary Candidates", default=True) ,sg.Push()]
+            [
+                sg.Push(), sg.Checkbox("Ambiguous", enable_events=True, key="filter_ambg_ambig") , 
+                sg.Checkbox("Staggered Ramp", enable_events=True, key="filter_ambg_staggered"), sg.Push()
+            ],
+            [
+                sg.Push(), sg.Checkbox("Unambiguous", enable_events=True, default=True, key="filter_ambg_unambig"), 
+                sg.Checkbox("Stationary Candidates", default=True, enable_events=True, key="filter_ambg_stat") ,sg.Push()
+            ]
         ], justification="center")
 
         self.invalid_state = sg.Column([
             [sg.Text("Cluster State", justification="center", expand_x=True)],
             [sg.Push(), 
-                sg.Checkbox("0x0", default=True) , 
-                sg.Checkbox("0x1"), 
-                sg.Checkbox("0x2"), 
-                sg.Checkbox("0x3"), 
-                sg.Checkbox("0x4", default=True) , 
-                sg.Checkbox("0x5", disabled=True), 
-                sg.Checkbox("0x6"), 
-                sg.Checkbox("0x7"), 
-                sg.Checkbox("0x8", default=True) , 
+                sg.Checkbox("0x0", default=True, enable_events=True,    key="filter_inv_00") , 
+                sg.Checkbox("0x1", enable_events=True,                  key="filter_inv_01"), 
+                sg.Checkbox("0x2", enable_events=True,                  key="filter_inv_02"), 
+                sg.Checkbox("0x3", enable_events=True,                  key="filter_inv_03"), 
+                sg.Checkbox("0x4", enable_events=True, default=True,    key="filter_inv_04") , 
+                sg.Checkbox("0x5", enable_events=True, disabled=True,   key="filter_inv_05"), 
+                sg.Checkbox("0x6", enable_events=True,                  key="filter_inv_06"), 
+                sg.Checkbox("0x7", enable_events=True,                  key="filter_inv_07"), 
+                sg.Checkbox("0x8", enable_events=True, default=True,    key="filter_inv_08") , 
             sg.Push()],
             [sg.Push(), 
-                sg.Checkbox("0x9", default=True), 
-                sg.Checkbox("0xA", default=True), 
-                sg.Checkbox("0xB", default=True), 
-                sg.Checkbox("0xC", default=True) , 
-                sg.Checkbox("0xD", disabled=True), 
-                sg.Checkbox("0xE"), 
-                sg.Checkbox("0xF", default=True),
-                sg.Checkbox("0x10", default=True) , 
-                sg.Checkbox("0x11", default=True),  
+                sg.Checkbox("0x9", enable_events=True, default=True,    key="filter_inv_09"), 
+                sg.Checkbox("0xA", enable_events=True, default=True,    key="filter_inv_0A"), 
+                sg.Checkbox("0xB", enable_events=True, default=True,    key="filter_inv_0B"), 
+                sg.Checkbox("0xC", enable_events=True, default=True,    key="filter_inv_0C") , 
+                sg.Checkbox("0xD", enable_events=True, disabled=True,   key="filter_inv_0D"), 
+                sg.Checkbox("0xE", enable_events=True,                  key="filter_inv_0E"), 
+                sg.Checkbox("0xF", enable_events=True, default=True,    key="filter_inv_0F"),
+                sg.Checkbox("0x10", enable_events=True, default=True,   key="filter_inv_10") , 
+                sg.Checkbox("0x11", enable_events=True, default=True,   key="filter_inv_11"),  
             sg.Push()],
         ], expand_x=True)
 
@@ -122,20 +125,20 @@ class Configurations:
         ]], 
         title_location=sg.TITLE_LOCATION_LEFT)
 
+        self.column1 = sg.Column([
+            [sg.Checkbox("Radar Power", expand_x=True, key="CHECK_RPW",default=True), sg.Push(), sg.Combo(self.POWER, self.POWER[0], font=self.FONT, size=15, key="RPW", readonly=True), sg.Push()],
+            [sg.Checkbox("RCS Treshold", expand_x=True, key="CHECK_RCS",default=True),  sg.Combo(self.RCS, self.RCS[0], font=self.FONT, size=16, key="RCS", readonly=True), sg.Push()],
+        ])
+        self.column2 = sg.Column([
+            [sg.Checkbox("Output Power", expand_x=True, key="CHECK_OUT",default=True),sg.Push(), sg.Combo(self.OUTPUT, self.OUTPUT[2], font=self.FONT, size=15, key="OUT", readonly=True), sg.Push()],
+            [sg.Push(), sg.Checkbox("Send Quality", key="CHECK_QUALITY",default=True), sg.Push()]
+        ])
+
         self.options = sg.Frame("Options", [
+            # Distancia baseada no que o radar no modo consegue alcançar
             [sg.Checkbox("Max Distance", expand_x=True, key="CHECK_DISTANCE",default=True),  sg.Push(), sg.Slider((196, 260), 100, orientation="h", resolution=1, key="DISTANCE", size=(40, 20)), sg.Push()],
-            [
-                sg.Checkbox("Radar Power", expand_x=True, key="CHECK_RPW",default=True),        sg.Push(), sg.Combo(self.POWER, self.POWER[0], font=self.FONT, size=15, key="RPW", readonly=True), sg.Push(),
-                sg.VerticalSeparator(),
-                sg.Checkbox("Output Power", expand_x=True, key="CHECK_OUT",default=True),       sg.Push(), sg.Combo(self.OUTPUT, self.OUTPUT[2], font=self.FONT, size=15, key="OUT", readonly=True), sg.Push(),
-            ],
-            [
-                sg.Checkbox("RCS Treshold", expand_x=True, key="CHECK_RCS",default=True),  sg.Combo(self.RCS, self.RCS[0], font=self.FONT, size=16, key="RCS", readonly=True), sg.Push(),
-                sg.VerticalSeparator(),
-                sg.Push(), sg.Checkbox("Send Quality", expand_x=True, key="CHECK_QUALITY",default=True), sg.Push()
-            ],   
-                [sg.Button("Send"), self.choices,  sg.VerticalSeparator(), sg.Button("Open conn", key="connection", button_color=("white", "red"), size=(10)), sg.Text("DISCONNECTED", key="status")
-            ],
+            [self.column1, sg.VerticalSeparator(), self.column2],
+            [sg.Button("Send"), self.choices,  sg.VerticalSeparator(), sg.Button("Open conn", key="connection", button_color=("white", "red"), size=(10)), sg.Text("DISCONNECTED", key="status")]
         ], title_location=sg.TITLE_LOCATION_TOP, pad=(0,20))
 
     def read(self):
