@@ -10,8 +10,10 @@ def generate_code_colors():
         b = int(colors[5:7], 16)
         transformed.append((b,g,r))
     return transformed
+CODES = generate_code_colors()
 
 import FreeSimpleGUI as sg
+from connection_packages import Clusters_messages
 
 class Filter_graph:
     def __init__(self, values : dict):
@@ -24,8 +26,8 @@ class Filter_graph:
         self.ambg_order = filter_keys[9:13]
         self.inv_order = filter_keys[13:]
         
-        # Criar os valores para filtrar
-        self.dyn = []; self.phd = None; self.ambg = []; self.inv = []
+        # Criar os valores para filtrar; o ambig tem um valor Falso no inicio
+        self.dyn = []; self.phd = None; self.ambg = [False]; self.inv = []
         
         for keys in self.dyn_order:     self.dyn.append(values[keys])
         self.phd = int(values[self.phd_order])
@@ -34,13 +36,32 @@ class Filter_graph:
 
     def update_values(self, event : str, values : dict):
         # Ver qual o tipo
-        print("ENTROU", event)
+        # print("ENTROU", event)
         if "dyn" in event: self.dyn[self.dyn_order.index(event)] = values[event]
         if "phd" in event: self.phd = int(values[event])
-        if "ambg" in event: self.ambg[self.ambg_order.index(event)] = values[event]
+        if "ambg" in event: self.ambg[self.ambg_order.index(event) + 1] = values[event] # O +1 é porque a primeira mensagem é invalida
         if "inv" in event: self.inv[self.inv_order.index(event)] = values[event]; 
+
+        print("VALORES DOS FILTROS")
+        print(self.dyn, self.phd, self.ambg, self.inv)
+        print("---------------------------")
     
     def allowed(self, dyn, phd, ambg, inv):
         return all([
-            self.dyn[dyn], self.phd <= phd, self.ambg[ambg], self.inv[inv]
+            self.dyn[dyn], phd <= self.phd and phd != 0, self.ambg[ambg], self.inv[inv]
         ])
+
+    def filter_points(self, messages : Clusters_messages):
+        all_x, all_y, colors = [], [], []
+        for i in range(messages.max_amount):
+            try: 
+                allow = self.allowed(messages.dyn[i], messages.pdh[i], messages.ambg[i], messages.inv[i])
+                if not allow: continue
+                all_x.append(messages.x[i]); all_y.append(messages.y[i]);
+                colors.append(CODES[messages.dyn[i]])
+            except KeyError:
+                print(f"Deu erro com a chave {i}")
+        
+        return all_x, all_y, colors
+            
+            

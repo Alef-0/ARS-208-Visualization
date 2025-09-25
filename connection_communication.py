@@ -46,10 +46,10 @@ class Can_Connection:
         self.sock.settimeout(0)
 
 
-    def read_chunk(self, max = 500):
+    def read_chunk(self, max = 64000):
         if not self.sock: print("Not connected?")
         try:
-            chunk = self.sock.recv(max - len(self.data))
+            chunk = self.sock.recv(max)
             if not chunk: print("Can't read anything, something went wrong")
             self.data += chunk
         except BlockingIOError: 

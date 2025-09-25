@@ -8,8 +8,10 @@ from connection_packages import read_201_radar_state as r201
 from connection_packages import read_701_cluster_list as r701
 from connection_packages import read_702_quality_info as r702
 from connection_packages import create_200_radar_configuration as c200
+from connection_packages import Clusters_messages
 
 from graph_filter import Filter_graph
+from graph_draw import Graph_radar
 
 def send_configuration_message(dic : sg.Window, connection : Can_Connection):
     values = []
@@ -56,13 +58,14 @@ if __name__ == "__main__":
     connection = Can_Connection()
     event, values = config.read()
     filter = Filter_graph(values)
+    message_collection = Clusters_messages()
+    graph = Graph_radar()
     
     # teste_id_701, teste_id_702 = [], []
 
     while True:
         event, values = config.read()
         if      event == sg.WINDOW_CLOSED: break
-        elif    event == sg.TIMEOUT_EVENT: pass; 
 
         # Parte do Menu
         match event:
@@ -73,6 +76,7 @@ if __name__ == "__main__":
                 if config.connected: send_configuration_message(values, connection)
             case s if re.match(r"^filter", s):
                 filter.update_values(event, values)
+            case sg.TIMEOUT_EVENT: pass
             case _: pass
         
         # Parte da conexão
@@ -82,14 +86,22 @@ if __name__ == "__main__":
         while (connection.can_create_can()):
             message  = connection.create_package()
         # Tratar da Conexão
+            if message.canId == 0x201: threat_201_message(message.canChannel, message.canData, config)
             if message.canChannel != 2: continue # Filtrar mensagens do filtro 2
             match message.canId:
-                case 0x201: threat_201_message(message.canChannel, message.canData, config)
+                # case 0x201: threat_201_message(message.canChannel, message.canData, config) # Deactivated for filtering id = 2        
                 case 0x600: 
-                    pass
+                    # print(message_collection.dyn, len(message_collection.dyn))
+                    x, y, colors = filter.filter_points(message_collection)
+                    graph.show_points(x,y, colors)
+                    
+                    message_collection.clear()
+                    print("----------------------")
                     # if teste_id_701 and teste_id_702: print(max(teste_id_701), max(teste_id_702))
                     # teste_id_701.clear(); teste_id_702.clear()
                 case 0x701:
                     things = r701(message.canData); #teste_id_701.append(things[0])
+                    message_collection.fill_701(things)
                 case 0x702:
                     things = r702(message.canData); #teste_id_702.append(things[0])
+                    message_collection.fill_702(things)

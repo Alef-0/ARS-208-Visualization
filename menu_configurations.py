@@ -23,12 +23,6 @@ class Configurations:
         self.centralize_combos()
         self.connected = False
 
-    def centralize_combos(self):
-        """Just Centralizing things messing with tkinter under the hood"""
-        self.window["RPW"].Widget.configure(justify="center")
-        self.window["OUT"].Widget.configure(justify="center")
-        self.window["RCS"].Widget.configure(justify="center")
-
     def create_radar_division(self):
         """Criando Tabs para ficar mais organizado"""
         
@@ -50,6 +44,29 @@ class Configurations:
         
         self.FRAME = [sg.Frame("Real Time Configurations", [parts], expand_x=True, title_location=sg.TITLE_LOCATION_TOP)]
 
+    def create_options(self):
+        self.choices = sg.Frame("Radar", [[
+            sg.Radio("1", "choose", key="send_1"), sg.Radio("2", "choose", key="send_2"), 
+            sg.Radio("3", "choose", key="send_3"),  sg.Radio("all", "choose", key="send_all", default=True)
+        ]], 
+        title_location=sg.TITLE_LOCATION_LEFT)
+
+        self.column1 = sg.Column([
+            [sg.Checkbox("Radar Power", expand_x=True, key="CHECK_RPW",default=True), sg.Push(), sg.Combo(self.POWER, self.POWER[0], font=self.FONT, size=15, key="RPW", readonly=True), sg.Push()],
+            [sg.Checkbox("RCS Treshold", expand_x=True, key="CHECK_RCS",default=True),  sg.Combo(self.RCS, self.RCS[0], font=self.FONT, size=16, key="RCS", readonly=True), sg.Push()],
+        ])
+        self.column2 = sg.Column([
+            [sg.Checkbox("Output Power", expand_x=True, key="CHECK_OUT",default=True),sg.Push(), sg.Combo(self.OUTPUT, self.OUTPUT[2], font=self.FONT, size=15, key="OUT", readonly=True), sg.Push()],
+            [sg.Push(), sg.Checkbox("Send Quality", key="CHECK_QUALITY",default=True), sg.Push()]
+        ])
+
+        self.options = sg.Frame("Options", [
+            # Distancia baseada no que o radar no modo consegue alcançar
+            [sg.Checkbox("Max Distance", expand_x=True, key="CHECK_DISTANCE",default=True),  sg.Push(), sg.Slider((196, 260), 100, orientation="h", resolution=1, key="DISTANCE", size=(40, 20)), sg.Push()],
+            [self.column1, sg.VerticalSeparator(), self.column2],
+            [sg.Button("Send"), self.choices,  sg.VerticalSeparator(), sg.Button("Open conn", key="connection", button_color=("white", "red"), size=(10)), sg.Text("DISCONNECTED", key="status")]
+        ], title_location=sg.TITLE_LOCATION_TOP, pad=(0,20))
+
     def create_filter_list(self):
         self.dynprop = sg.Column([
             [sg.Push(), 
@@ -68,7 +85,7 @@ class Configurations:
         
         self.slider_pdh = sg.Column([
             [sg.Push(), sg.Text("PDH - False Alarm Probability %\nZero is invalid", justification="center"), sg.Push()],
-            [sg.Slider((1, 7),disable_number_display=True, default_value=1, orientation='h', tick_interval=1, expand_x=True, enable_events=True, key="filter_phd")],
+            [sg.Slider((1, 7),disable_number_display=True, default_value=3, orientation='h', tick_interval=1, expand_x=True, enable_events=True, key="filter_phd")],
             [sg.Text("[0, 1 = 25, 2 = 50, 3 = 75, 4 = 90, 5 = 99...]", expand_x=True, justification="center")]
         ], justification="center")
 
@@ -118,31 +135,14 @@ class Configurations:
                 [self.invalid_state]
             ], title_location=sg.TITLE_LOCATION_TOP, expand_x=True)
 
-    def create_options(self):
-        self.choices = sg.Frame("Radar", [[
-            sg.Radio("1", "choose", key="send_1"), sg.Radio("2", "choose", key="send_2"), 
-            sg.Radio("3", "choose", key="send_3"),  sg.Radio("all", "choose", key="send_all", default=True)
-        ]], 
-        title_location=sg.TITLE_LOCATION_LEFT)
-
-        self.column1 = sg.Column([
-            [sg.Checkbox("Radar Power", expand_x=True, key="CHECK_RPW",default=True), sg.Push(), sg.Combo(self.POWER, self.POWER[0], font=self.FONT, size=15, key="RPW", readonly=True), sg.Push()],
-            [sg.Checkbox("RCS Treshold", expand_x=True, key="CHECK_RCS",default=True),  sg.Combo(self.RCS, self.RCS[0], font=self.FONT, size=16, key="RCS", readonly=True), sg.Push()],
-        ])
-        self.column2 = sg.Column([
-            [sg.Checkbox("Output Power", expand_x=True, key="CHECK_OUT",default=True),sg.Push(), sg.Combo(self.OUTPUT, self.OUTPUT[2], font=self.FONT, size=15, key="OUT", readonly=True), sg.Push()],
-            [sg.Push(), sg.Checkbox("Send Quality", key="CHECK_QUALITY",default=True), sg.Push()]
-        ])
-
-        self.options = sg.Frame("Options", [
-            # Distancia baseada no que o radar no modo consegue alcançar
-            [sg.Checkbox("Max Distance", expand_x=True, key="CHECK_DISTANCE",default=True),  sg.Push(), sg.Slider((196, 260), 100, orientation="h", resolution=1, key="DISTANCE", size=(40, 20)), sg.Push()],
-            [self.column1, sg.VerticalSeparator(), self.column2],
-            [sg.Button("Send"), self.choices,  sg.VerticalSeparator(), sg.Button("Open conn", key="connection", button_color=("white", "red"), size=(10)), sg.Text("DISCONNECTED", key="status")]
-        ], title_location=sg.TITLE_LOCATION_TOP, pad=(0,20))
+    def centralize_combos(self):
+        """Just Centralizing things messing with tkinter under the hood"""
+        self.window["RPW"].Widget.configure(justify="center")
+        self.window["OUT"].Widget.configure(justify="center")
+        self.window["RCS"].Widget.configure(justify="center")
 
     def read(self):
-        return self.window.read(10) # milliseconds
+        return self.window.read(1) # milliseconds
     
     def change_connection(self, connection):
         self.connected =  connection

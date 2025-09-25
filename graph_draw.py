@@ -11,7 +11,7 @@ MAX_VALUES = 15
 # argv[1] = Camera Topic to subscribe
 
 
-class graph_radar():
+class Graph_radar():
     def __init__(self):
         # Define graph parameters
         self.margin = 50
@@ -112,8 +112,7 @@ class graph_radar():
 
     def show_points(self, x_group, y_group, colors):
         new_img = self.base_image.copy()
-
-        for y, x, c in zip(y_group, x_group, colors):
+        for x, y, c in zip(x_group, y_group, colors):
             value = self.graph_to_pixel(x,y)
             cv.circle(new_img, value, 4, c, -1)
             

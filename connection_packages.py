@@ -3,6 +3,33 @@ import sys
 
 ba = lambda x: bytearray(x)
 
+class Clusters_messages():
+	def __init__(self):
+		self.max_amount = 0
+		self.x = {}; self.y = {}
+		self.dyn = {}
+		self.pdh = {}; self.ambg = {}; self.inv = {}
+	
+	def clear(self):
+		self.max_amount = 0
+		self.x.clear(); self.y.clear()
+		self.dyn.clear()
+		self.pdh.clear(); self.ambg.clear(); self.inv.clear()
+	
+	def fill_701(self, message : list):
+		if message[0] < self.max_amount: print("Something is wrong with the amount")
+		if message[0] > self.max_amount: self.max_amount = message[0]
+		id = message[0]
+		self.y[id] = message[1]; self.x[id] = message[2] # Longitude e latitude
+		self.dyn[id] = message[3] # dynprop
+	
+	def fill_702(self, message :list):
+		if message[0] > self.max_amount: self.max_amount = message[0]
+		id = message[0]
+		self.pdh[id] = message[1] # PDH
+		self.ambg[id] = message[2] # ambig
+		self.inv[id] = message[3]
+
 def create_200_radar_configuration(ok_distance, distance, ok_radarpower, radarpower, 
 								    ok_output, output, ok_rcs, rcs,
 									ok_qual, quality
@@ -87,5 +114,5 @@ def read_702_quality_info(package : bytearray):
 	# print(hex(raw), "later")
 	
 
-	return ID, ambig_state, invalid_state, PDH0
+	return ID, PDH0, ambig_state, invalid_state
 
