@@ -80,12 +80,14 @@ if __name__ == "__main__":
     filter = Filter_graph(values)
     message_collection = Clusters_messages()
     graph = Graph_radar()
+    radar_choice = 2 # default
     
     # teste_id_701, teste_id_702 = [], []
 
     while True:
         event, values = config.read()
         if event == sg.WINDOW_CLOSED: break
+        # if event != sg.TIMEOUT_EVENT: print(event)
 
         # Parte do Menu
         match event:
@@ -105,7 +107,11 @@ if __name__ == "__main__":
                 else:       config.window["save_nvm"].update(button_color=("white", "red"))
 
                 if config.connected: send_configuration_message(values, connection, result)
-            case _: pass
+            case s if re.match(r"^visu_radar_choose", s):
+                radar_choice = int(event[-1])
+                message_collection.clear()
+            case _: 
+                print(event)
         
         # Parte da conexão
         if (not connection.connected): continue
@@ -115,7 +121,7 @@ if __name__ == "__main__":
             message  = connection.create_package()
         # Tratar da Conexão
             if message.canId == 0x201: threat_201_message(message.canChannel, message.canData, config)
-            if message.canChannel != 2: continue # Filtrar mensagens do filtro 2
+            if message.canChannel != radar_choice: continue 
             match message.canId:
                 # case 0x201: threat_201_message(message.canChannel, message.canData, config) # Deactivated for filtering id = 2        
                 case 0x600: 
