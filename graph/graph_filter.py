@@ -1,3 +1,6 @@
+import FreeSimpleGUI as sg
+from connection.connection_packages import Clusters_messages
+
 def generate_code_colors():
     transformed = []
     COLORS_ORIGINAL = [
@@ -11,9 +14,6 @@ def generate_code_colors():
         transformed.append((b,g,r))
     return transformed
 CODES = generate_code_colors()
-
-import FreeSimpleGUI as sg
-from connection_packages import Clusters_messages
 
 class Filter_graph:
     def __init__(self, values : dict):

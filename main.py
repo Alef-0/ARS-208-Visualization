@@ -1,17 +1,19 @@
 from menu_configurations import Configurations
-from connection_communication import Can_Connection, can_data
+from connection.connection_communication import Can_Connection, can_data
 import FreeSimpleGUI as sg
 from time import sleep
 import re
 
-from connection_packages import read_201_radar_state as r201
-from connection_packages import read_701_cluster_list as r701
-from connection_packages import read_702_quality_info as r702
-from connection_packages import create_200_radar_configuration as c200
-from connection_packages import Clusters_messages
+from connection.connection_packages import read_201_radar_state as r201
+from connection.connection_packages import read_701_cluster_list as r701
+from connection.connection_packages import read_702_quality_info as r702
+from connection.connection_packages import create_200_radar_configuration as c200
+from connection.connection_packages import Clusters_messages
 
-from graph_filter import Filter_graph
-from graph_draw import Graph_radar
+from graph.graph_filter import Filter_graph
+from graph.graph_draw import Graph_radar
+
+from multiprocessing import Pipe, Event
 
 def send_configuration_message(dic : sg.Window, connection : Can_Connection, save_volatile):
     values = []
@@ -67,12 +69,13 @@ def check_popup():
     
     window.close()
     return result
-
-    
   
 if __name__ == "__main__":
     font = ("Helvetica", 12) 
     sg.set_options(font=font)
+
+    parent_conn, child_conn = Pipe()
+    event_conn = Event()
 
     config = Configurations()
     connection = Can_Connection()
@@ -80,14 +83,14 @@ if __name__ == "__main__":
     filter = Filter_graph(values)
     message_collection = Clusters_messages()
     graph = Graph_radar()
-    radar_choice = 2 # default
+    
+    radar_choice = [int(x[-1]) for x in values.keys() if (x.startswith("visu_radar_choose") and values[x] == True)][0] # Só deveria haver 1
     
     # teste_id_701, teste_id_702 = [], []
 
     while True:
         event, values = config.read()
         if event == sg.WINDOW_CLOSED: break
-        # if event != sg.TIMEOUT_EVENT: print(event)
 
         # Parte do Menu
         match event:
@@ -111,8 +114,9 @@ if __name__ == "__main__":
                 radar_choice = int(event[-1])
                 message_collection.clear()
             case _: 
-                print(event)
-        
+                print(event)        
+        if event != sg.TIMEOUT_EVENT: print(event, radar_choice)
+
         # Parte da conexão
         if (not connection.connected): continue
         # print("CHEGOU AQUI")
