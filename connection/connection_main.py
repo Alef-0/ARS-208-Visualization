@@ -10,11 +10,10 @@ from graph.graph_draw import Graph_radar
 
 from multiprocessing.connection import Connection
 from multiprocess.synchronize import Event
-from multiprocessing import Process, Manager
+from multiprocessing import Process, Manager, Queue
+import re
 
-
-
-def threat_201_message(channel, bytes):
+def threat_201_message(channel, bytes, pool : Queue):
     MaxDistanceCfg, RadarPowerCfg, OutputTypeCfg, RCS_Treshold, SendQualityCfg, _ = r201(bytes)
     
     distance = MaxDistanceCfg * 2
@@ -24,41 +23,81 @@ def threat_201_message(channel, bytes):
     quality = ["No", "Ok"][SendQualityCfg]
 
     # Mudar para o dicionário real
+    dicio = {}
 
-    # self.window[f'DISTANCE_{radar}'].update(values[0])
-    # self.window[f'RPW_{radar}'].update(values[1])
-    # self.window[f'OUT_{radar}'].update(values[2])
-    # self.window[f'RCS_{radar}'].update(values[3])
-    # self.window[f'EXT_{radar}'].update(values[4])
+    dicio[f'DISTANCE_{channel}'] = distance
+    dicio[f'RPW_{channel}'] = radar
+    dicio[f'OUT_{channel}'] = output
+    dicio[f'RCS_{channel}'] = rcs
+    dicio[f'EXT_{channel}'] = quality
+    pool.put_nowait(("message_201", dicio))
 
+def send_configuration_message(dic : dict, connection : Can_Connection, save_volatile):
+    values = []
+    values.append(dic['CHECK_DISTANCE'])
+    values.append(int(dic["DISTANCE"] / 2) )
+    values.append(dic["CHECK_RPW"])
+    values.append(["STANDARD", "-3dB Tx gain", "-6dB Tx gain", "-9dB Tx gain"].index(dic['RPW']))
+    values.append(dic["CHECK_OUT"])
+    values.append(["NONE", "OBJECT", "CLUSTERS"].index(dic["OUT"]))
+    values.append(dic["CHECK_RCS"])
+    values.append(["STANDARD", "HIGH SENSITIVITY"].index(dic['RCS']))
+    values.append(1)
+    values.append(dic['CHECK_QUALITY'])
 
-def create_connection_communication(values : dict, pipe : Connection):
-    with Manager() as manager:
-        shared_dict = manager.dict()
+    data = c200(*values, save_volatile)
+    print("Enviando algo")
 
+    # Long way
+    if dic['send_1'] or dic['send_all']:
+        message = connection.packet_struct.pack(8, 0, 0x200, 0, data.to_bytes(8), 1)
+        connection.send_message(message)
+    if dic['send_2'] or dic['send_all']:
+        message = connection.packet_struct.pack(8, 0, 0x200, 0, data.to_bytes(8), 2)
+        connection.send_message(message)
+    if dic['send_3'] or dic['send_all']:
+        message = connection.packet_struct.pack(8, 0, 0x200, 0, data.to_bytes(8), 3)
+        connection.send_message(message)
 
-    radar_choice = [int(x[-1]) for x in values.keys() if (x.startswith("visu_radar_choose") and values[x] == True)][0] # Só deveria haver 1
+def create_connection_communication(initial_dict : dict, pipe : Connection, pool : Queue):
+    radar_choice = [int(x[-1]) for x in initial_dict.keys() if (x.startswith("visu_radar_choose") and initial_dict[x] == True)][0] # Só deveria haver 1
     
     connection = Can_Connection()
     message_collection = Clusters_messages()
     graph = Graph_radar()
-    filter = Filter_graph(values)
+    filter = Filter_graph(initial_dict)
 
     while True:
-        poll = pipe.poll(0)
-        if poll: 
-            event = pipe.recv()
-            match event:
-                case "connection": connection.change_connection()
-                case _: pass
+        try:
+            if pipe.poll(): 
+                event, values = pipe.recv()
+                match event:
+                    case "connection":                  
+                        print("Trying to change connection")
+                        connection.change_connection()
+                        pool.put(("change_connection", connection.connected))
+                    case "Send":
+                        if connection.connected: send_configuration_message(values, connection, False)
+                    case "save_nvm":
+                        if connection.connected: send_configuration_message(values, connection, True)
+                    case s if re.match(r"^filter", s):  
+                        print("Updating Filter")
+                        filter.update_values(event, values)
+                    case s if re.match(r"^visu_radar_choose", s):
+                        print("Changing visualization to ", values)
+                        radar_choice = values
+                    case _: pass
+        except KeyboardInterrupt:
+            # Serve para o cntrl C não interromper tudo
+            break
         
         # Working normally
-        if ( not connection.connected): continue
+        if (not connection.connected): continue
         connection.read_chunk()
         while (connection.can_create_can()):
             message  = connection.create_package()
         # Tratar da Conexão
-            if message.canId == 0x201: threat_201_message(message.canChannel, message.canData)
+            if message.canId == 0x201: threat_201_message(message.canChannel, message.canData, pool)
             if message.canChannel != radar_choice: continue 
             match message.canId:
                 # case 0x201: threat_201_message(message.canChannel, message.canData, config) # Deactivated for filtering id = 2        

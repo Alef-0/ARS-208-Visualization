@@ -155,17 +155,23 @@ class Configurations:
         self.window["status"].update("CONNECTED" if connection else "DISCONNECTED")
 
         # Clear radar
-        dummy = ["XXX","XXX","XXX","XXX","XXX",]
-        self.change_radar(1, dummy)
-        self.change_radar(2, dummy)
-        self.change_radar(3, dummy)
+        def create_dict(channel):
+            dummy = {}
+            dummy[f'DISTANCE_{channel}'] = "XXX"
+            dummy[f'RPW_{channel}'] = "XXX"
+            dummy[f'OUT_{channel}'] = "XXX"
+            dummy[f'RCS_{channel}'] = "XXX"
+            dummy[f'EXT_{channel}'] = "XXX"
+            return dummy
         
-    def change_radar(self, radar, values):
-        self.window[f'DISTANCE_{radar}'].update(values[0])
-        self.window[f'RPW_{radar}'].update(values[1])
-        self.window[f'OUT_{radar}'].update(values[2])
-        self.window[f'RCS_{radar}'].update(values[3])
-        self.window[f'EXT_{radar}'].update(values[4])
+        self.change_radar(create_dict(1))
+        self.change_radar(create_dict(2))
+        self.change_radar(create_dict(3))
+        
+    def change_radar(self, dicio : dict):
+        for key, item in dicio.items():
+            self.window[key].update(item)
+            
 
     def __del__(self): 
         self.window.close()

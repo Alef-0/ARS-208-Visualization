@@ -13,7 +13,12 @@ from connection.connection_packages import Clusters_messages
 from graph.graph_filter import Filter_graph
 from graph.graph_draw import Graph_radar
 
-from multiprocessing import Pipe, Event
+from camera.camera_main import camera_start
+
+from multiprocessing import Process, Queue, Pipe
+from multiprocessing.connection import Connection
+
+from connection.connection_main import create_connection_communication
 
 def send_configuration_message(dic : sg.Window, connection : Can_Connection, save_volatile):
     values = []
@@ -74,70 +79,49 @@ if __name__ == "__main__":
     font = ("Helvetica", 12) 
     sg.set_options(font=font)
 
-    parent_conn, child_conn = Pipe()
-    event_conn = Event()
-
+    all_queue = Queue(5)
+    receive_conn, send_conn = Pipe()
     config = Configurations()
-    connection = Can_Connection()
     event, values = config.read()
-    filter = Filter_graph(values)
-    message_collection = Clusters_messages()
-    graph = Graph_radar()
     
-    radar_choice = [int(x[-1]) for x in values.keys() if (x.startswith("visu_radar_choose") and values[x] == True)][0] # Só deveria haver 1
-    
-    # teste_id_701, teste_id_702 = [], []
+    conn_process = Process(target=create_connection_communication, args=(values, receive_conn, all_queue), daemon=True)
+    conn_process.start()
+
+    # camera_process = Process(target=camera_start, args=(), daemon=True)
+    # camera_process.start()
 
     while True:
-        event, values = config.read()
-        if event == sg.WINDOW_CLOSED: break
-
+        try: event, values = config.read()
+        except KeyboardInterrupt: break
+        finally: 
+            if event == sg.WINDOW_CLOSED: break
+        
         # Parte do Menu
         match event:
             case "connection": 
-                connection.change_connection()
-                config.change_connection(connection.connected)
-                graph.close()
+                send_conn.send((event, None))
             case "Send":
-                if config.connected: send_configuration_message(values, connection, False)
+                if config.connected: send_conn.send((event, values))
                 config.window["save_nvm"].update(button_color=("black", "white"))
             case s if re.match(r"^filter", s):
-                filter.update_values(event, values)
+                send_conn.send((event, values))
             case sg.TIMEOUT_EVENT: pass
             case "save_nvm": 
-                result = check_popup()
-                if result:  config.window["save_nvm"].update(button_color=("white", "green"))
-                else:       config.window["save_nvm"].update(button_color=("white", "red"))
-
-                if config.connected: send_configuration_message(values, connection, result)
+                if config.connected:
+                    result = check_popup()
+                    if result:  config.window["save_nvm"].update(button_color=("white", "green"))
+                    else:       config.window["save_nvm"].update(button_color=("white", "red"))
+                    send_conn.send((event, values))
             case s if re.match(r"^visu_radar_choose", s):
                 radar_choice = int(event[-1])
-                message_collection.clear()
-            case _: 
-                print(event)        
-        if event != sg.TIMEOUT_EVENT: print(event, radar_choice)
+                send_conn.send((event, radar_choice))
+            case _: print(event)        
+        if event != sg.TIMEOUT_EVENT: print(event)
 
-        # Parte da conexão
-        if (not connection.connected): continue
-        # print("CHEGOU AQUI")
-        connection.read_chunk()
-        while (connection.can_create_can()):
-            message  = connection.create_package()
-        # Tratar da Conexão
-            if message.canId == 0x201: threat_201_message(message.canChannel, message.canData, config)
-            if message.canChannel != radar_choice: continue 
-            match message.canId:
-                # case 0x201: threat_201_message(message.canChannel, message.canData, config) # Deactivated for filtering id = 2        
-                case 0x600: 
-                    # print(message_collection.dyn, len(message_collection.dyn))
-                    x, y, colors = filter.filter_points(message_collection)
-                    graph.show_points(x,y, colors) 
-                    message_collection.clear()
-                    # if teste_id_701 and teste_id_702: print(max(teste_id_701), max(teste_id_702))
-                    # teste_id_701.clear(); teste_id_702.clear()
-                case 0x701:
-                    things = r701(message.canData); #teste_id_701.append(things[0])
-                    message_collection.fill_701(things)
-                case 0x702:
-                    things = r702(message.canData); #teste_id_702.append(things[0])
-                    message_collection.fill_702(things)
+        # See events
+        if not all_queue.empty():
+            message, values = all_queue.get()
+            # print("VALUES ON POOL:", message, values)
+            match message:
+                case "message_201": config.change_radar(values)
+                case "change_connection": config.change_connection(values)
