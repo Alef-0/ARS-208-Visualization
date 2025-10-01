@@ -21,12 +21,13 @@ class Configurations:
         
         #Configurações adicionais
         self.centralize_combos()
-        self.connected = False
+        self.connected_radar = False
+        self.connected_cam = False
 
     def create_radar_division(self):
         """Criando Tabs para ficar mais organizado"""
         
-        warning_text = [sg.Push(), sg.Text("VISUALIZAÇÃO SÓ FUNCIONA NO MODO CLUSTER"), sg.Push()]
+        warning_text = [sg.Push(), sg.Text("VISUALIZAÇÃO SÓ FUNCIONA NO MODO CLUSTER COM EXTRA INFO (OK)"), sg.Push()]
         separation = []
         names = ["", "LEFT", "MIDDLE", "RIGHT"]
         letter = ["dsadas", "A", "B", "C"]
@@ -37,7 +38,7 @@ class Configurations:
                 [sg.Text("Radar", expand_x=True, justification="left"),       sg.Text("XXX", key=f"RPW_{i}", expand_x=True, justification="right")],
                 [sg.Text("Output", expand_x=True, justification="left"),      sg.Text("XXX", key=f"OUT_{i}", expand_x=True, justification="right")],
                 [sg.Text("RCS", expand_x=True, justification="left"),         sg.Text("XXX", key=f"RCS_{i}", expand_x=True, justification="right")],
-                [sg.Text("Ext Info", expand_x=True, justification="left"),    sg.Text("XXX", key=f"EXT_{i}", expand_x=True, justification="right")],
+                [sg.Text("Extra Info", expand_x=True, justification="left"),    sg.Text("XXX", key=f"EXT_{i}", expand_x=True, justification="right")],
                 [sg.Radio(f"Visualizar Grupo {letter[i]}", "visu_radar", key=f"choose_{i}", default= True if i == 2 else False, enable_events=True)]
             ]
             )
@@ -67,7 +68,7 @@ class Configurations:
             # Distancia baseada no que o radar no modo consegue alcançar
             [sg.Checkbox("Max Distance", expand_x=True, key="CHECK_DISTANCE",default=True),  sg.Push(), sg.Slider((196, 260), 100, orientation="h", resolution=1, key="DISTANCE", size=(40, 20)), sg.Push()],
             [self.column1, sg.VerticalSeparator(), self.column2],
-            [sg.Button("Send"), self.choices,  sg.VerticalSeparator(), sg.Button("Open conn", key="connection", button_color=("white", "red"), size=(10)), sg.Text("DISCONNECTED", key="status")],
+            [sg.Button("Send"), self.choices,  sg.VerticalSeparator(), sg.Button("OPEN RADAR", key="conn_radar", button_color=("white", "green")), sg.Button("OPEN CAM", key="conn_cam", button_color=("white", "green"), size=(10)),],
             [sg.Button("SAVE in Non Volatile Memory", key="save_nvm", expand_x=True, button_color=("black", "white"))]
         ], title_location=sg.TITLE_LOCATION_TOP, pad=(0,20))
 
@@ -148,12 +149,11 @@ class Configurations:
     def read(self):
         return self.window.read(1) # milliseconds
     
-    def change_connection(self, connection):
-        self.connected =  connection
-        if self.connected:
-                self.window['connection'].update("Close conn", button_color=("white", "green"))
-        else:   self.window['connection'].update("Open conn", button_color=("white", "red"))
-        self.window["status"].update("CONNECTED" if connection else "DISCONNECTED")
+    def change_connection_radar(self, connection):
+        self.connected_radar =  connection
+        if self.connected_radar:
+                self.window['conn_radar'].update("CLOSE RADAR", button_color=("white", "red"))
+        else:   self.window['conn_radar'].update("OPEN RADAR", button_color=("white", "green"))
 
         # Clear radar
         def create_dict(channel):
@@ -168,7 +168,13 @@ class Configurations:
         self.change_radar(create_dict(1))
         self.change_radar(create_dict(2))
         self.change_radar(create_dict(3))
-        
+    
+    def change_connection_cam(self, connection):
+        self.connected_cam =  connection
+        if self.connected_cam:
+                self.window['conn_cam'].update("CLOSE CAM", button_color=("white", "red"))
+        else:   self.window['conn_cam'].update("OPEN CAM", button_color=("white", "green"))
+
     def change_radar(self, dicio : dict):
         for key, item in dicio.items():
             self.window[key].update(item)

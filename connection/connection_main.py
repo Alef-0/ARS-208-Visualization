@@ -12,6 +12,7 @@ from multiprocessing.connection import Connection
 from multiprocess.synchronize import Event
 from multiprocessing import Process, Manager, Queue
 import re
+import cv2 as cv
 
 def threat_201_message(channel, bytes, pool : Queue):
     MaxDistanceCfg, RadarPowerCfg, OutputTypeCfg, RCS_Treshold, SendQualityCfg, _ = r201(bytes)
@@ -72,20 +73,21 @@ def create_connection_communication(initial_dict : dict, pipe : Connection, pool
             if pipe.poll(): 
                 event, values = pipe.recv()
                 match event:
-                    case "connection":                  
+                    case "conn_radar":                  
                         print("Trying to change connection")
                         connection.change_connection()
-                        pool.put(("change_connection", connection.connected))
+                        pool.put(("change_radar", connection.connected))
+                        cv.destroyAllWindows()
                     case "Send":
                         if connection.connected: send_configuration_message(values, connection, False)
                     case "save_nvm":
                         if connection.connected: send_configuration_message(values, connection, True)
+                    case "choose":
+                        print("Changing visualization to ", values)
+                        radar_choice = values
                     case s if re.match(r"^filter", s):  
                         print("Updating Filter")
                         filter.update_values(event, values)
-                    case s if re.match(r"^choose_", s):
-                        print("Changing visualization to ", values)
-                        radar_choice = values
                     case _: pass
         except KeyboardInterrupt:
             # Serve para o cntrl C não interromper tudo

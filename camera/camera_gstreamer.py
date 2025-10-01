@@ -12,17 +12,29 @@ from gi.repository import Gst, GstApp, GLib
 Gst.init(None)
 STOP = False
 
+
 from multiprocessing import Pipe
 from multiprocessing.connection import Connection
+from multiprocess.queues import Queue
+import socket
+
+def tcp_ping(host: str, port: int, timeout: int = 2) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 class GStreamerPipeline:
-    def __init__(self, conn : Connection):
+    def __init__(self, conn : Connection, pool : Queue):
         self.pipeline = None
         self.main_loop = None
         self.running = False
         self.qu = queue.Queue(2)
         self.default_num = 2
-        self.conn = conn
+        self.communicate = conn
+        self.connected = False
+        self.pool = pool
     
     def create_url(self, num):
         return f"rtsp://admin:l1v3user5@192.168.1.108:554/cam/realmonitor?channel={num}&subtype=0"
@@ -70,6 +82,7 @@ class GStreamerPipeline:
 
     def on_message(self, bus, message):
         """Handle bus messages"""
+        global STOP
         msg_type = message.type
         if msg_type == Gst.MessageType.EOS:
             print("End of stream reached")
@@ -91,12 +104,27 @@ class GStreamerPipeline:
     def display_frame_in_gui_thread(self):
         # Check if a frame is available
         global STOP 
-        if self.conn.poll():
-            self.default_num = self.conn.recv()
+        # print("ENTERING THE GUI THREAD")
+
+        if self.communicate.poll():
+            event, value = self.communicate.recv()
+            match event:
+                case "choose": self.default_num = value
+                case "conn_cam": 
+                    if not self.connected and tcp_ping("192.168.1.108", 80, 10): 
+                        self.pool.put(("change_cam", True))
+                        self.connected = True
+                    else: 
+                        cv.destroyAllWindows()
+                        self.pool.put(("change_cam", False))
+                        self.connected = False
+                case "STOP": STOP = True
+            
+            # Always reset
             if self.main_loop: self.main_loop.quit()
             return GLib.SOURCE_REMOVE # Stop scheduling this function
 
-        if self.qu:
+        if self.connected and self.qu:
             frame : np.ndarray = self.qu.get()
             frame = cv.resize(frame, (800, 600), interpolation=cv.INTER_LINEAR)
             cv.imshow("GStreamer Webcam Feed", frame)
@@ -106,22 +134,7 @@ class GStreamerPipeline:
                 if self.main_loop: self.main_loop.quit()
                 return GLib.SOURCE_REMOVE # Stop scheduling this function
 
-            # if key == ord('q') or STOP:
-            #     STOP = True
-            #     if self.main_loop: self.main_loop.quit()
-            #     return GLib.SOURCE_REMOVE # Stop scheduling this function
-            # if key == ord('1'):
-            #     if self.main_loop: self.main_loop.quit()
-            #     self.default_num = 1
-            #     return GLib.SOURCE_REMOVE # Stop scheduling this function
-            # if key == ord('2'):
-            #     if self.main_loop: self.main_loop.quit()
-            #     self.default_num = 2
-            #     return GLib.SOURCE_REMOVE # Stop scheduling this function
-            # if key == ord('3'):
-            #     if self.main_loop: self.main_loop.quit()
-            #     self.default_num = 3
-            #     return GLib.SOURCE_REMOVE # Stop scheduling this function
+        # print("REACHED THE END OF GUI")
         return GLib.SOURCE_CONTINUE # Keep scheduling this function
 
     def run(self):
@@ -169,6 +182,8 @@ class GStreamerPipeline:
         # Start pipeline
         ret = self.pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
+            global STOP
+            STOP = True
             print("Unable to set pipeline to PLAYING state")
             return False
         
@@ -185,17 +200,22 @@ def signal_handler(sig, frame):
     global STOP
     STOP = True
 
-def gstreamer_main(connection : Connection):
+
+def gstreamer_main(connection : Connection, pool : Queue):
     signal.signal(signal.SIGTERM, signal_handler) 
     signal.signal(signal.SIGINT, signal_handler)
-    pipeline = GStreamerPipeline(connection)
+    pipeline = GStreamerPipeline(connection, pool)
     global STOP
 
     while True:
-        pipeline.run()
-        if connection.poll() and connection.recv() == "STOP": STOP = True
-        if STOP: pipeline.cleanup(); break
+        if pipeline.connected:
+            pipeline.run()
+            if STOP: pipeline.cleanup(); break
+        else: pipeline.display_frame_in_gui_thread()
+        if STOP: break
+        
 
 if __name__ == "__main__": 
     send, receive = Pipe()
-    gstreamer_main(receive)
+    q = Queue(5)
+    gstreamer_main(send, q)

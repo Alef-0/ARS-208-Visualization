@@ -17,7 +17,7 @@ class Clusters_messages():
 		self.pdh.clear(); self.ambg.clear(); self.inv.clear()
 	
 	def fill_701(self, message : list):
-		if message[0] < self.max_amount: print("Something is wrong with the amount")
+		# if message[0] < self.max_amount: print("Something is wrong with the amount")
 		if message[0] > self.max_amount: self.max_amount = message[0]
 		id = message[0]
 		self.y[id] = message[1]; self.x[id] = message[2] # Longitude e latitude

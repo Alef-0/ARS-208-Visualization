@@ -52,19 +52,17 @@ if __name__ == "__main__":
     conn_process = Process(target=create_connection_communication, args=(values, receive_conn, all_queue), daemon=True)
     conn_process.start()
 
-    camera_process = Process(target=gstreamer_main, args=(receive_can,), daemon=True)
+    camera_process = Process(target=gstreamer_main, args=(receive_can, all_queue), daemon=True)
     camera_process.start()
 
     while True:
         try: event, values = config.read()
         except KeyboardInterrupt: break
         finally: 
-            if event == sg.WINDOW_CLOSED: send_cam.send("STOP"); break
+            if event == sg.WINDOW_CLOSED: send_cam.send(("STOP", None)); break
         
         # Parte do Menu
         match event:
-            case "connection": 
-                send_conn.send((event, None))
             case "Send":
                 if config.connected: send_conn.send((event, values))
                 config.window["save_nvm"].update(button_color=("black", "white"))
@@ -79,15 +77,23 @@ if __name__ == "__main__":
                     send_conn.send((event, values))
             case s if re.match(r"^choose_", s):
                 choice = int(event[-1])
-                send_conn.send((event, choice))
-                send_cam.send(choice)
+                send_conn.send( ("choose", choice))
+                send_cam.send(  ("choose", choice))
+            case s if re.match(r"^conn_", s):
+                if event.endswith("radar"): send_conn.send((event, None))
+                elif event.endswith("cam"): send_cam.send((event, None))
             case _: print(event)        
         if event != sg.TIMEOUT_EVENT: print(event)
 
         # See events
-        if not all_queue.empty():
-            message, values = all_queue.get()
-            # print("VALUES ON POOL:", message, values)
-            match message:
-                case "message_201": config.change_radar(values)
-                case "change_connection": config.change_connection(values)
+        try:
+            if not all_queue.empty():
+                message, values = all_queue.get()
+                # print("VALUES ON POOL:", message, values)
+                match message:
+                    case "message_201": config.change_radar(values)
+                    case "change_radar": config.change_connection_radar(values)
+                    case "change_cam": config.change_connection_cam(values)
+                    case _: print(message, values)
+        except KeyboardInterrupt: 
+            break

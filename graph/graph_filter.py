@@ -61,9 +61,9 @@ class Filter_graph:
                 all_x.append(messages.x[i]); all_y.append(messages.y[i]);
                 colors.append(CODES[messages.dyn[i]])
             except KeyError:
-                print(f"Deu erro com a chave {i}")
+                # print(f"Deu erro com a chave {i}")
                 erro = True
-        if erro: print("-----------")
+        if erro: print("--------ERRO COM ALGUMAS CHAVES--------")
         return all_x, all_y, colors
             
             
