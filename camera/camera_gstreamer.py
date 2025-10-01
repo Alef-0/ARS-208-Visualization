@@ -127,7 +127,7 @@ class GStreamerPipeline:
         if self.connected and self.qu:
             frame : np.ndarray = self.qu.get()
             frame = cv.resize(frame, (800, 600), interpolation=cv.INTER_LINEAR)
-            cv.imshow("GStreamer Webcam Feed", frame)
+            cv.imshow("CAMERA", frame)
             key = cv.waitKey(1) & 0xFF 
 
             if STOP:

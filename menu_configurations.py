@@ -33,7 +33,7 @@ class Configurations:
         letter = ["dsadas", "A", "B", "C"]
         for i in range(1,4):
             curr_tab = sg.Column([
-                [sg.Text(f"{names[i]}_{i}", justification="center", expand_x=True)],
+                [sg.Text(f"{names[i]} {letter[i]}", justification="center", expand_x=True)],
                 [sg.Text("Distance", expand_x=True, justification="left"),    sg.Text("XXX", key=f"DISTANCE_{i}", expand_x=True, justification="right")],
                 [sg.Text("Radar", expand_x=True, justification="left"),       sg.Text("XXX", key=f"RPW_{i}", expand_x=True, justification="right")],
                 [sg.Text("Output", expand_x=True, justification="left"),      sg.Text("XXX", key=f"OUT_{i}", expand_x=True, justification="right")],

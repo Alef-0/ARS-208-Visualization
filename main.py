@@ -3,6 +3,7 @@ from connection.connection_communication import Can_Connection, can_data
 import FreeSimpleGUI as sg
 from time import sleep
 import re
+import signal
 
 from connection.connection_packages import read_201_radar_state as r201
 from connection.connection_packages import read_701_cluster_list as r701
@@ -20,6 +21,7 @@ from multiprocessing import Process, Queue, Pipe
 from multiprocessing.connection import Connection
 
 from connection.connection_main import create_connection_communication
+loop =  True
 
 def check_popup():
     layout = [
@@ -38,8 +40,15 @@ def check_popup():
     
     window.close()
     return result
-  
+
+def signal_handler(sig, frame):
+    print("Finalizing menu by interruption")
+    global loop
+    loop = False
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, signal_handler)
+
     font = ("Helvetica", 12) 
     sg.set_options(font=font)
 
@@ -54,27 +63,24 @@ if __name__ == "__main__":
 
     camera_process = Process(target=gstreamer_main, args=(receive_can, all_queue), daemon=True)
     camera_process.start()
+    
 
-    while True:
-        try: event, values = config.read()
-        except KeyboardInterrupt: break
-        finally: 
-            if event == sg.WINDOW_CLOSED: send_cam.send(("STOP", None)); break
+    while loop:
+        event, values = config.read()
+        if event == sg.WINDOW_CLOSED: send_cam.send(("STOP", None)); break
         
         # Parte do Menu
         match event:
             case "Send":
-                if config.connected: send_conn.send((event, values))
+                if config.connected_radar: send_conn.send((event, values))
                 config.window["save_nvm"].update(button_color=("black", "white"))
-            case s if re.match(r"^filter", s):
-                send_conn.send((event, values))
-            case sg.TIMEOUT_EVENT: pass
             case "save_nvm": 
                 if config.connected:
                     result = check_popup()
                     if result:  config.window["save_nvm"].update(button_color=("white", "green"))
                     else:       config.window["save_nvm"].update(button_color=("white", "red"))
                     send_conn.send((event, values))
+            case s if re.match(r"^filter", s): send_conn.send((event, values))
             case s if re.match(r"^choose_", s):
                 choice = int(event[-1])
                 send_conn.send( ("choose", choice))
@@ -82,18 +88,16 @@ if __name__ == "__main__":
             case s if re.match(r"^conn_", s):
                 if event.endswith("radar"): send_conn.send((event, None))
                 elif event.endswith("cam"): send_cam.send((event, None))
+            case sg.TIMEOUT_EVENT: pass
             case _: print(event)        
         if event != sg.TIMEOUT_EVENT: print(event)
 
         # See events
-        try:
-            if not all_queue.empty():
-                message, values = all_queue.get()
-                # print("VALUES ON POOL:", message, values)
-                match message:
-                    case "message_201": config.change_radar(values)
-                    case "change_radar": config.change_connection_radar(values)
-                    case "change_cam": config.change_connection_cam(values)
-                    case _: print(message, values)
-        except KeyboardInterrupt: 
-            break
+        if not all_queue.empty():
+            message, values = all_queue.get()
+            # print("VALUES ON POOL:", message, values)
+            match message:
+                case "message_201": config.change_radar(values)
+                case "change_radar": config.change_connection_radar(values)
+                case "change_cam": config.change_connection_cam(values)
+                case _: print("UNKNOWN MESSAGE", message, values)
