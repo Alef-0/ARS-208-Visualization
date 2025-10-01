@@ -29,6 +29,7 @@ class Configurations:
         warning_text = [sg.Push(), sg.Text("VISUALIZAÇÃO SÓ FUNCIONA NO MODO CLUSTER"), sg.Push()]
         separation = []
         names = ["", "LEFT", "MIDDLE", "RIGHT"]
+        letter = ["dsadas", "A", "B", "C"]
         for i in range(1,4):
             curr_tab = sg.Column([
                 [sg.Text(f"{names[i]}_{i}", justification="center", expand_x=True)],
@@ -37,7 +38,7 @@ class Configurations:
                 [sg.Text("Output", expand_x=True, justification="left"),      sg.Text("XXX", key=f"OUT_{i}", expand_x=True, justification="right")],
                 [sg.Text("RCS", expand_x=True, justification="left"),         sg.Text("XXX", key=f"RCS_{i}", expand_x=True, justification="right")],
                 [sg.Text("Ext Info", expand_x=True, justification="left"),    sg.Text("XXX", key=f"EXT_{i}", expand_x=True, justification="right")],
-                [sg.Radio(f"Visualizar Radar {i}", "visu_radar", key=f"visu_radar_choose_{i}", default= True if i == 2 else False, enable_events=True)]
+                [sg.Radio(f"Visualizar Grupo {letter[i]}", "visu_radar", key=f"choose_{i}", default= True if i == 2 else False, enable_events=True)]
             ]
             )
             separation.extend([sg.Push(), curr_tab, sg.Push(), sg.VSep()])

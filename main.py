@@ -13,49 +13,13 @@ from connection.connection_packages import Clusters_messages
 from graph.graph_filter import Filter_graph
 from graph.graph_draw import Graph_radar
 
-from camera.camera_main import camera_start
+from camera.camera_webcam import camera_start
+from camera.camera_gstreamer import gstreamer_main
 
 from multiprocessing import Process, Queue, Pipe
 from multiprocessing.connection import Connection
 
 from connection.connection_main import create_connection_communication
-
-def send_configuration_message(dic : sg.Window, connection : Can_Connection, save_volatile):
-    values = []
-    values.append(dic['CHECK_DISTANCE'])
-    values.append(int(dic["DISTANCE"] / 2) )
-    values.append(dic["CHECK_RPW"])
-    values.append(["STANDARD", "-3dB Tx gain", "-6dB Tx gain", "-9dB Tx gain"].index(dic['RPW']))
-    values.append(dic["CHECK_OUT"])
-    values.append(["NONE", "OBJECT", "CLUSTERS"].index(dic["OUT"]))
-    values.append(dic["CHECK_RCS"])
-    values.append(["STANDARD", "HIGH SENSITIVITY"].index(dic['RCS']))
-    values.append(1)
-    values.append(dic['CHECK_QUALITY'])
-
-    data = c200(*values, save_volatile)
-    print("Enviando algo")
-    # Long way
-    if dic['send_1'] or dic['send_all']:
-        message = connection.packet_struct.pack(8, 0, 0x200, 0, data.to_bytes(8), 1)
-        connection.send_message(message)
-    if dic['send_2'] or dic['send_all']:
-        message = connection.packet_struct.pack(8, 0, 0x200, 0, data.to_bytes(8), 2)
-        connection.send_message(message)
-    if dic['send_3'] or dic['send_all']:
-        message = connection.packet_struct.pack(8, 0, 0x200, 0, data.to_bytes(8), 3)
-        connection.send_message(message)
-
-def threat_201_message(channel, bytes, config : Configurations):
-    MaxDistanceCfg, RadarPowerCfg, OutputTypeCfg, RCS_Treshold, SendQualityCfg, _ = r201(bytes)
-    
-    distance = MaxDistanceCfg * 2
-    radar = ["STANDARD", "-3db TX", "-6db TX", "-9db TX"][RadarPowerCfg]
-    output = ["None", "Objects", "Clusters"][OutputTypeCfg]
-    rcs = ["Standard", "High Sensitivity"][RCS_Treshold]
-    quality = ["No", "Ok"][SendQualityCfg]
-
-    config.change_radar(channel, [distance, radar, output, rcs, quality])
 
 def check_popup():
     layout = [
@@ -81,20 +45,21 @@ if __name__ == "__main__":
 
     all_queue = Queue(5)
     receive_conn, send_conn = Pipe()
+    receive_can, send_cam = Pipe(False)
     config = Configurations()
     event, values = config.read()
     
     conn_process = Process(target=create_connection_communication, args=(values, receive_conn, all_queue), daemon=True)
     conn_process.start()
 
-    # camera_process = Process(target=camera_start, args=(), daemon=True)
-    # camera_process.start()
+    camera_process = Process(target=gstreamer_main, args=(receive_can,), daemon=True)
+    camera_process.start()
 
     while True:
         try: event, values = config.read()
         except KeyboardInterrupt: break
         finally: 
-            if event == sg.WINDOW_CLOSED: break
+            if event == sg.WINDOW_CLOSED: send_cam.send("STOP"); break
         
         # Parte do Menu
         match event:
@@ -112,9 +77,10 @@ if __name__ == "__main__":
                     if result:  config.window["save_nvm"].update(button_color=("white", "green"))
                     else:       config.window["save_nvm"].update(button_color=("white", "red"))
                     send_conn.send((event, values))
-            case s if re.match(r"^visu_radar_choose", s):
-                radar_choice = int(event[-1])
-                send_conn.send((event, radar_choice))
+            case s if re.match(r"^choose_", s):
+                choice = int(event[-1])
+                send_conn.send((event, choice))
+                send_cam.send(choice)
             case _: print(event)        
         if event != sg.TIMEOUT_EVENT: print(event)
 

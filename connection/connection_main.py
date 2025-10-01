@@ -60,7 +60,7 @@ def send_configuration_message(dic : dict, connection : Can_Connection, save_vol
         connection.send_message(message)
 
 def create_connection_communication(initial_dict : dict, pipe : Connection, pool : Queue):
-    radar_choice = [int(x[-1]) for x in initial_dict.keys() if (x.startswith("visu_radar_choose") and initial_dict[x] == True)][0] # Só deveria haver 1
+    radar_choice = [int(x[-1]) for x in initial_dict.keys() if (x.startswith("choose_") and initial_dict[x] == True)][0] # Só deveria haver 1
     
     connection = Can_Connection()
     message_collection = Clusters_messages()
@@ -83,7 +83,7 @@ def create_connection_communication(initial_dict : dict, pipe : Connection, pool
                     case s if re.match(r"^filter", s):  
                         print("Updating Filter")
                         filter.update_values(event, values)
-                    case s if re.match(r"^visu_radar_choose", s):
+                    case s if re.match(r"^choose_", s):
                         print("Changing visualization to ", values)
                         radar_choice = values
                     case _: pass
