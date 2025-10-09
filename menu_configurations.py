@@ -26,8 +26,14 @@ class Configurations:
 
     def create_radar_division(self):
         """Criando Tabs para ficar mais organizado"""
-        
-        warning_text = [sg.Push(), sg.Text("VISUALIZAÇÃO SÓ FUNCIONA NO MODO CLUSTER COM EXTRA INFO (OK)"), sg.Push()]
+        GPS = sg.Frame("", 
+                       [[sg.Text("0° 0' 0\" N, 0° 0' 0\" E", expand_x=True, key="gps_text"), 
+                         sg.Button("OPEN GPS", key="conn_gps", button_color=("white", "green"))]], 
+                       title_location=sg.TITLE_LOCATION_RIGHT)
+        warning_text = [
+            sg.Push(), sg.Text("CLUSTER + QUALITY FOR GRAPHS"), sg.Push(), 
+            GPS, sg.Push()
+        ]
         separation = []
         names = ["", "LEFT", "MIDDLE", "RIGHT"]
         letter = ["dsadas", "A", "B", "C"]
@@ -70,7 +76,7 @@ class Configurations:
             [self.column1, sg.VerticalSeparator(), self.column2],
             [sg.Button("Send"), self.choices,  sg.VerticalSeparator(), sg.Button("OPEN RADAR", key="conn_radar", button_color=("white", "green")), sg.Button("OPEN CAM", key="conn_cam", button_color=("white", "green"), size=(10)),],
             [sg.Button("SAVE in Non Volatile Memory", key="save_nvm", expand_x=True, button_color=("black", "white"))]
-        ], title_location=sg.TITLE_LOCATION_TOP, pad=(0,20))
+        ], title_location=sg.TITLE_LOCATION_TOP)
 
     def create_filter_list(self):
         self.dynprop = sg.Column([
@@ -174,6 +180,10 @@ class Configurations:
         if self.connected_cam:
                 self.window['conn_cam'].update("CLOSE CAM", button_color=("white", "red"))
         else:   self.window['conn_cam'].update("OPEN CAM", button_color=("white", "green"))
+    
+    def change_connection_gps(self, connection):
+        if connection:  self.window['conn_gps'].update("CLOSE GPS", button_color=("white", "red"))
+        else:           self.window['conn_gps'].update("OPEN GPS", button_color=("white", "green"))
 
     def change_radar(self, dicio : dict):
         for key, item in dicio.items():

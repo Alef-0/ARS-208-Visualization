@@ -21,6 +21,7 @@ from multiprocessing import Process, Queue, Pipe
 from multiprocessing.connection import Connection
 
 from connection.connection_main import create_connection_communication
+from gps.gps_connection import main as gps_main
 loop =  True
 
 def check_popup():
@@ -53,16 +54,21 @@ if __name__ == "__main__":
     sg.set_options(font=font)
 
     all_queue = Queue(5)
-    receive_conn, send_conn = Pipe()
-    receive_can, send_cam = Pipe(False)
+    receive_radar, send_radar = Pipe()
+    receive_cam, send_cam = Pipe()
+    receive_gps, send_gps = Pipe()
+
     config = Configurations()
     event, values = config.read()
     
-    conn_process = Process(target=create_connection_communication, args=(values, receive_conn, all_queue), daemon=True)
+    conn_process = Process(target=create_connection_communication, args=(values, receive_radar, all_queue), daemon=True)
     conn_process.start()
 
-    camera_process = Process(target=gstreamer_main, args=(receive_can, all_queue), daemon=True)
+    camera_process = Process(target=gstreamer_main, args=(receive_cam, all_queue), daemon=True)
     camera_process.start()
+
+    gps_process = Process(target=gps_main, args = (receive_gps, all_queue),daemon=True)
+    gps_process.start()
     
 
     while loop:
@@ -72,22 +78,23 @@ if __name__ == "__main__":
         # Parte do Menu
         match event:
             case "Send":
-                if config.connected_radar: send_conn.send((event, values))
+                if config.connected_radar: send_radar.send((event, values))
                 config.window["save_nvm"].update(button_color=("black", "white"))
             case "save_nvm": 
                 if config.connected:
                     result = check_popup()
                     if result:  config.window["save_nvm"].update(button_color=("white", "green"))
                     else:       config.window["save_nvm"].update(button_color=("white", "red"))
-                    send_conn.send((event, values))
-            case s if re.match(r"^filter", s): send_conn.send((event, values))
+                    send_radar.send((event, values))
+            case s if re.match(r"^filter", s): send_radar.send((event, values))
             case s if re.match(r"^choose_", s):
                 choice = int(event[-1])
-                send_conn.send( ("choose", choice))
+                send_radar.send( ("choose", choice))
                 send_cam.send(  ("choose", choice))
             case s if re.match(r"^conn_", s):
-                if event.endswith("radar"): send_conn.send((event, None))
+                if event.endswith("radar"): send_radar.send((event, None))
                 elif event.endswith("cam"): send_cam.send((event, None))
+                elif event.endswith("gps"): send_gps.send((event, None))
             case sg.TIMEOUT_EVENT: pass
             case _: print(event)        
         if event != sg.TIMEOUT_EVENT: print(event)
@@ -100,4 +107,6 @@ if __name__ == "__main__":
                 case "message_201": config.change_radar(values)
                 case "change_radar": config.change_connection_radar(values)
                 case "change_cam": config.change_connection_cam(values)
+                case "gps_text": config.window[message].update(values)
+                case "conn_gps": config.change_connection_gps(values)
                 case _: print("UNKNOWN MESSAGE", message, values)
