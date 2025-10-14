@@ -28,7 +28,8 @@ class Configurations:
         """Criando Tabs para ficar mais organizado"""
         GPS = sg.Frame("", 
                        [[sg.Text("0° 0' 0\" N, 0° 0' 0\" E", expand_x=True, key="gps_text"), 
-                         sg.Button("OPEN GPS", key="conn_gps", button_color=("white", "green"))]], 
+                         sg.Button("OPEN GPS", key="conn_gps", button_color=("white", "green")), 
+                         sg.Button("MAPS", key="gps_maps")]], 
                        title_location=sg.TITLE_LOCATION_RIGHT)
         warning_text = [
             sg.Push(), sg.Text("CLUSTER + QUALITY FOR GRAPHS"), sg.Push(), 

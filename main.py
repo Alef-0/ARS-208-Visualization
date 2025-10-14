@@ -95,6 +95,8 @@ if __name__ == "__main__":
                 if event.endswith("radar"): send_radar.send((event, None))
                 elif event.endswith("cam"): send_cam.send((event, None))
                 elif event.endswith("gps"): send_gps.send((event, None))
+            case "gps_maps":
+                send_gps.send((event, None))
             case sg.TIMEOUT_EVENT: pass
             case _: print(event)        
         if event != sg.TIMEOUT_EVENT: print(event)
