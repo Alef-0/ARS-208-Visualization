@@ -1,5 +1,15 @@
 import FreeSimpleGUI as sg
 
+def flatten_deep(nested_list):
+    flat_list = []
+    for item in nested_list:
+        # If the item is a list, recursively flatten it
+        if isinstance(item, list):
+            flat_list.extend(flatten_deep(item))
+        else:
+            flat_list.append(item)
+    return flat_list
+
 class Configurations:
     POWER = ["STANDARD", "-3dB Tx gain", "-6dB Tx gain", "-9dB Tx gain"]
     OUTPUT = ["NONE", "OBJECT", "CLUSTERS"]
@@ -19,6 +29,18 @@ class Configurations:
         self.layout = [ [self.FRAME], [sg.Push(), self.options, sg.Push()], [self.filter]]
         self.window = sg.Window("Configurations Menu", self.layout, finalize=True)
         
+        # PLEASE
+        # all_elements = flatten_deep(self.layout)
+        # print(all_elements)
+        
+        for element in self.window.element_list():
+            # It checks every element across all rows and frames and fix their sizes
+            if isinstance(element, sg.Combo):
+                combo_widget = element.Widget
+                popdown_name = combo_widget.tk.eval(f'ttk::combobox::PopdownWindow {combo_widget}')
+                combo_widget.tk.call(f'{popdown_name}.f.l', 'configure', '-font', ("Helvetica", 11) )
+                combo_widget.tk.call(f'{popdown_name}.f.l', 'configure', '-justify', 'center')
+
         #Configurações adicionais
         self.centralize_combos()
         self.connected_radar = False
@@ -73,9 +95,11 @@ class Configurations:
 
         self.options = sg.Frame("Options", [
             # Distancia baseada no que o radar no modo consegue alcançar
-            [sg.Checkbox("Max Distance", expand_x=True, key="CHECK_DISTANCE",default=True),  sg.Push(), sg.Slider((196, 260), 100, orientation="h", resolution=1, key="DISTANCE", size=(40, 20)), sg.Push()],
+            [sg.Checkbox("Max Distance: ", key="CHECK_DISTANCE",default=True), sg.Text("196", size=(4, 1), font=("Helvetica", 12), key='SLIDER_VAL'), sg.Push(), 
+             sg.Slider((196, 260), 100, orientation="h", resolution=1, key="DISTANCE", size=(40, 20), disable_number_display=True, enable_events=True, expand_x=True), 
+             sg.Push()],
             [self.column1, sg.VerticalSeparator(), self.column2],
-            [sg.Button("Send"), self.choices,  sg.VerticalSeparator(), sg.Button("OPEN RADAR", key="conn_radar", button_color=("white", "green")), sg.Button("OPEN CAM", key="conn_cam", button_color=("white", "green"), size=(10)),],
+            [sg.Button("Send"), self.choices,  sg.VerticalSeparator(), sg.Button("OPEN RADAR", key="conn_radar", button_color=("white", "green")), sg.Button("OPEN CAM", key="conn_cam", button_color=("white", "green")),],
             [sg.Button("SAVE in Non Volatile Memory", key="save_nvm", expand_x=True, button_color=("black", "white"))]
         ], title_location=sg.TITLE_LOCATION_TOP)
 

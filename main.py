@@ -98,6 +98,9 @@ if __name__ == "__main__":
                 elif event.endswith("gps"): send_gps.send((event, None))
             case "gps_maps":
                 send_gps.send((event, None))
+            case "DISTANCE":
+                current_val = int(values['DISTANCE'])
+                config.window['SLIDER_VAL'].update(current_val)
             case sg.TIMEOUT_EVENT: pass
             case _: print(event)        
         if event != sg.TIMEOUT_EVENT: print(event)
