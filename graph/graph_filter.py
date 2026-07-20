@@ -1,71 +1,61 @@
-import FreeSimpleGUI as sg
-from connection.connection_packages import Clusters_messages
+from connection.connection_packages_modified import Clusters_messages
+from ui.filter_schema import DYNAMIC_COLORS_BGR, PDH_KEY, parse_filter_key
 
-def generate_code_colors():
-    transformed = []
-    COLORS_ORIGINAL = [
-    "#FF0000", "#FF7B00", "#FFE600", "#00FF00",
-    "#0000FF","#00FFFF", "#8400FF","#000000",
-    ]
-    for colors in COLORS_ORIGINAL:
-        r = int(colors[1:3], 16)
-        g = int(colors[3:5], 16)
-        b = int(colors[5:7], 16)
-        transformed.append((b,g,r))
-    return transformed
-CODES = generate_code_colors()
 
 class Filter_graph:
-    def __init__(self, values : dict):
-        # Garantia que os filtros estão em ordem
-        filter_keys = [key for key in list(values.keys()) 
-                       if (type(key) == str and "filter" in key)]
-        # Criar a ordem de tudo
-        self.dyn_order = filter_keys[0:8]
-        self.phd_order = filter_keys[8]
-        self.ambg_order = filter_keys[9:13]
-        self.inv_order = filter_keys[13:]
-        
-        # Criar os valores para filtrar; o ambig tem um valor Falso no inicio
-        self.dyn = []; self.phd = None; self.ambg = [False]; self.inv = []
-        
-        for keys in self.dyn_order:     self.dyn.append(values[keys])
-        self.phd = int(values[self.phd_order])
-        for keys in self.ambg_order:   self.ambg.append(values[keys])
-        for keys in self.inv_order: self.inv.append(values[keys])
+    def __init__(self, values: dict):
+        self.enabled_values = {
+            "dynamic_property": set(),
+            "ambiguity_state": set(),
+            "invalid_state": set(),
+        }
+        self.pdh_max = int(values.get(PDH_KEY, 3))
+        self._load(values)
 
-    def update_values(self, event : str, values : dict):
-        # Ver qual o tipo
-        # print("ENTROU", event)
-        if "dyn" in event: self.dyn[self.dyn_order.index(event)] = values[event]
-        if "phd" in event: self.phd = int(values[event])
-        if "ambg" in event: self.ambg[self.ambg_order.index(event) + 1] = values[event] # O +1 é porque a primeira mensagem é invalida
-        if "inv" in event: self.inv[self.inv_order.index(event)] = values[event]; 
+    def _load(self, values: dict) -> None:
+        for key, enabled in values.items():
+            parsed = parse_filter_key(key)
+            if parsed is None:
+                continue
+            field, value = parsed
+            if field == "pdh":
+                self.pdh_max = int(enabled)
+            elif field in self.enabled_values and isinstance(value, int) and enabled:
+                self.enabled_values[field].add(value)
 
-        print("VALORES DOS FILTROS")
-        print(self.dyn, self.phd, self.ambg, self.inv)
-        print("---------------------------")
-    
-    def allowed(self, dyn, phd, ambg, inv):
-        # print(dyn, phd, ambg, inv)
-        return all([
-            self.dyn[dyn], phd <= self.phd and phd != 0, self.ambg[ambg], self.inv[inv]
-        ])
+    def update_values(self, event: str, values: dict) -> None:
+        parsed = parse_filter_key(event)
+        if parsed is None:
+            return
+        field, value = parsed
+        if field == "pdh":
+            self.pdh_max = int(values[event])
+            return
+        if field not in self.enabled_values or not isinstance(value, int):
+            return
+        selected = self.enabled_values[field]
+        if values[event]:
+            selected.add(value)
+        else:
+            selected.discard(value)
 
-    def filter_points(self, messages : Clusters_messages):
+    def allowed(self, dyn: int, pdh: int, ambg: int, inv: int) -> bool:
+        return (
+            dyn in self.enabled_values["dynamic_property"]
+            and 0 < pdh <= self.pdh_max
+            and ambg in self.enabled_values["ambiguity_state"]
+            and inv in self.enabled_values["invalid_state"]
+        )
+
+    def filter_points(self, messages: Clusters_messages):
         all_x, all_y, colors = [], [], []
-        erro = False
-        for i in range(messages.max_amount):
-            try: 
-                # print(messages)
-                allow = self.allowed(messages.dyn[i], messages.pdh[i], messages.ambg[i], messages.inv[i])
-                if not allow: continue
-                all_x.append(messages.x[i]); all_y.append(messages.y[i]);
-                colors.append(CODES[messages.dyn[i]])
-            except KeyError:
-                # print(f"Deu erro com a chave {i}")
-                erro = True
-        if erro: print("--------ERRO COM ALGUMAS CHAVES--------")
+        ids = messages.x.keys() & messages.y.keys() & messages.dyn.keys()
+        ids &= messages.pdh.keys() & messages.ambg.keys() & messages.inv.keys()
+        for cluster_id in ids:
+            dyn = messages.dyn[cluster_id]
+            if not self.allowed(dyn, messages.pdh[cluster_id], messages.ambg[cluster_id], messages.inv[cluster_id]):
+                continue
+            all_x.append(messages.x[cluster_id])
+            all_y.append(messages.y[cluster_id])
+            colors.append(DYNAMIC_COLORS_BGR[dyn])
         return all_x, all_y, colors
-            
-            
