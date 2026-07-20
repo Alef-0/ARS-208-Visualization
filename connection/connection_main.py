@@ -1,8 +1,8 @@
-from connection.connection_packages import read_201_radar_state as r201
-from connection.connection_packages import read_701_cluster_list as r701
-from connection.connection_packages import read_702_quality_info as r702
-from connection.connection_packages import create_200_radar_configuration as c200
-from connection.connection_packages import Clusters_messages
+from connection.connection_packages_modified import read_201_radar_state as r201
+from connection.connection_packages_modified import read_701_cluster_list as r701
+from connection.connection_packages_modified import read_702_quality_info as r702
+from connection.connection_packages_modified import create_200_radar_configuration as c200
+from connection.connection_packages_modified import Clusters_messages
 
 from connection.connection_communication import Can_Connection, can_data
 from graph.graph_filter import Filter_graph
@@ -101,7 +101,7 @@ def create_connection_communication(initial_dict : dict, pipe : Connection, pool
         connection.read_chunk()
         while (connection.can_create_can()):
             message  = connection.create_package()
-            print(message)
+            # print(message)
             # continue
         # Tratar da Conexão
             if message.canId == 0x201: threat_201_message(message.canChannel, message.canData, pool)

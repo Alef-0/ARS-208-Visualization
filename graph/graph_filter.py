@@ -47,6 +47,7 @@ class Filter_graph:
         print("---------------------------")
     
     def allowed(self, dyn, phd, ambg, inv):
+        # print(dyn, phd, ambg, inv)
         return all([
             self.dyn[dyn], phd <= self.phd and phd != 0, self.ambg[ambg], self.inv[inv]
         ])
@@ -56,6 +57,7 @@ class Filter_graph:
         erro = False
         for i in range(messages.max_amount):
             try: 
+                # print(messages)
                 allow = self.allowed(messages.dyn[i], messages.pdh[i], messages.ambg[i], messages.inv[i])
                 if not allow: continue
                 all_x.append(messages.x[i]); all_y.append(messages.y[i]);
