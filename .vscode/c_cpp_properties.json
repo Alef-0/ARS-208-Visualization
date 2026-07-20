@@ -6,7 +6,7 @@
         "limitSymbolsToIncludedHeaders": false
       },
       "includePath": [
-        "/opt/ros/kilted/include/**",
+        "/opt/ros/jazzy/include/**",
         "/usr/include/**"
       ],
       "name": "ros2",
