@@ -42,14 +42,13 @@ def _join_processes(processes, timeout=3.0):
 def main():
     shutdown_event = Event()
 
-    def signal_handler(_sig, _frame):
-        shutdown_event.set()
-
+    def signal_handler(_sig, _frame): shutdown_event.set()
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     sg.set_options(font=("Helvetica", 12))
     all_queue = Queue(5)
+    
     receive_radar, send_radar = Pipe()
     receive_cam, send_cam = Pipe()
     receive_gps, send_gps = Pipe()
@@ -124,5 +123,4 @@ def main():
         config.window.close()
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()

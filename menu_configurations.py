@@ -1,6 +1,6 @@
 import FreeSimpleGUI as sg
 
-from ui.filter_schema import (
+from interface.filter_schema import (
     AMBIGUITY_STATE_OPTIONS,
     DYNAMIC_PROPERTY_OPTIONS,
     INVALID_STATE_OPTIONS,
@@ -69,12 +69,12 @@ class Configurations:
             sg.Radio("all", "choose", key="send_all", default=True),
         ]])
         column1 = sg.Column([
-            [sg.Checkbox("Radar Power", key="CHECK_RPW", default=True), sg.Combo(self.POWER, self.POWER[3], key="RPW", readonly=True)],
+            [sg.Checkbox("Radar Power", key="CHECK_RPW", default=True), sg.Push(), sg.Combo(self.POWER, self.POWER[3], key="RPW", readonly=True)],
             [sg.Checkbox("RCS Threshold", key="CHECK_RCS", default=True), sg.Combo(self.RCS, self.RCS[1], key="RCS", readonly=True)],
         ])
         column2 = sg.Column([
-            [sg.Checkbox("Output Type", key="CHECK_OUT", default=True), sg.Combo(self.OUTPUT, self.OUTPUT[2], key="OUT", readonly=True)],
-            [sg.Checkbox("Send Quality", key="CHECK_QUALITY", default=True)],
+            [sg.Checkbox("Output Type", key="CHECK_OUT", default=True), sg.Combo(self.OUTPUT, self.OUTPUT[2], key="OUT", readonly=True, size=(15, 1),)],
+            [sg.Push(), sg.Checkbox("Send Quality", key="CHECK_QUALITY", default=True), sg.Push()],
         ])
         self.options = sg.Frame("Options", [
             [sg.Checkbox("Max Distance", key="CHECK_DISTANCE", default=True), sg.Text("196", key="SLIDER_VAL"),

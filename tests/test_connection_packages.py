@@ -7,7 +7,6 @@ from connection.connection_packages_modified import (
     read_702_quality_info,
 )
 
-
 class RadarPackageTests(unittest.TestCase):
     def test_701_fields_cross_byte_boundaries(self):
         dist_lon = 0x123
