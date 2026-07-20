@@ -1,6 +1,6 @@
 import unittest
 
-from connection.connection_packages_modified import (
+from connection.connection_packages import (
     create_200_radar_configuration,
     read_201_radar_state,
     read_701_cluster_list,

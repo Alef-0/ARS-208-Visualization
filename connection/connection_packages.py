@@ -1,121 +1,89 @@
-import numpy as np
-import sys
+class Clusters_messages:
+    def __init__(self):
+        self.max_amount = 0
+        self.x = {}
+        self.y = {}
+        self.dyn = {}
+        self.pdh = {}
+        self.ambg = {}
+        self.inv = {}
 
-ba = lambda x: bytearray(x)
+    def clear(self):
+        self.max_amount = 0
+        self.x.clear()
+        self.y.clear()
+        self.dyn.clear()
+        self.pdh.clear()
+        self.ambg.clear()
+        self.inv.clear()
 
-class Clusters_messages():
-	def __init__(self):
-		self.max_amount = 0
-		self.x = {}; self.y = {}
-		self.dyn = {}
-		self.pdh = {}; self.ambg = {}; self.inv = {}
-	
-	def clear(self):
-		self.max_amount = 0
-		self.x.clear(); self.y.clear()
-		self.dyn.clear()
-		self.pdh.clear(); self.ambg.clear(); self.inv.clear()
-	
-	def fill_701(self, message : list):
-		# if message[0] < self.max_amount: print("Something is wrong with the amount")
-		if message[0] > self.max_amount: self.max_amount = message[0]
-		id = message[0]
-		self.y[id] = message[1]; self.x[id] = message[2] # Longitude e latitude
-		self.dyn[id] = message[3] # dynprop
-	
-	def fill_702(self, message :list):
-		if message[0] > self.max_amount: self.max_amount = message[0]
-		id = message[0]
-		self.pdh[id] = message[1] # PDH
-		self.ambg[id] = message[2] # ambig
-		self.inv[id] = message[3]
+    def fill_701(self, message: tuple):
+        cluster_id, longitudinal, lateral, dynamic_property = message
+        self.max_amount = max(self.max_amount, cluster_id)
+        self.y[cluster_id] = longitudinal
+        self.x[cluster_id] = lateral
+        self.dyn[cluster_id] = dynamic_property
 
-def create_200_radar_configuration(ok_distance, distance, ok_radarpower, radarpower, 
-								    ok_output, output, ok_rcs, rcs,
-									ok_qual, quality, save_nvm
-								   ):
-	raw = 0x0
-	
-	# Distance
-	raw += ok_distance << 56 
-	raw += distance << 46 # Treshold de Max Distance de (196 - 1200) / 2
-	# RadarPower
-	raw += ok_radarpower << 58 
-	raw += radarpower << 29 # Radar Power [STANDARD, -3, -6, -9]
-	# Output
-	raw += ok_output << 59
-	raw += output << 27 # [None, Object, Cluster, DONOTUSE]
-	# RCS
-	raw += ok_rcs << 8
-	raw += rcs << 9
-	# External
-	raw += ok_qual << 60
-	raw += quality << 18
-	# Saving in volatile
-	raw += save_nvm << 63
-	raw += save_nvm << 23
+    def fill_702(self, message: tuple):
+        cluster_id, pdh0, ambiguity_state, invalid_state = message
+        self.max_amount = max(self.max_amount, cluster_id)
+        self.pdh[cluster_id] = pdh0
+        self.ambg[cluster_id] = ambiguity_state
+        self.inv[cluster_id] = invalid_state
 
-	return raw
 
-def read_201_radar_state(package : bytearray):
-	raw = int.from_bytes(package, "big")
+def _check_payload(payload: bytes) -> None:
+    if len(payload) != 8:
+        raise ValueError(f"Expected an 8-byte CAN payload, got {len(payload)}")
 
-	# Pegar variaveis
-	# Linhas 7 -> 6 (+ 1)
-	raw >>= 2 # Limpar parte
-	RCS_Treshold = 		raw & 0x07;	raw >>= 3 + 12
-	# Linhas 5
-	CtrlRelayCfg = 		raw & 0x1; 	raw >>= 1
-	OutputTypeCfg = 	raw & 0x3; 	raw >>= 2
-	SendQualityCfg = 	raw & 0x1;  raw >>= 1
-	SendExtInfoCfg = 	raw & 0x1;	raw >>= 1
-	MotionRxState = 	raw & 0x3; 	raw >>= 2
-	# Linhas 4 e 3
-	SensorID = 			raw & 0x7 ; raw >>= 3 + 1
-	SortIndex = 		raw & 0x7 ;	raw >>= 3
-	RadarPowerCfg = 	raw & 0x7 ; raw >>= 3 + 7
-	# Linhas 2 e 1
-	VoltageError = 		raw & 0x1 ;	raw >>= 1
-	TemporaryError = 	raw & 0x1 ;	raw >>= 1
-	TemperatureError=	raw & 0x1 ;	raw >>= 1
-	Interference = 		raw & 0x1 ; raw >>= 1
-	PersistentError= 	raw & 0x1 ; raw >>= 1
-	MaxDistanceCfg = 	raw & 0x3FF;raw >>= 10 + 6
-	# Linhas 0
-	NVMReadStatus =		raw & 0x01;	raw >>= 1
-	NVMWriteStatus=		raw & 0x01;	raw >>= 1
-	
-	return MaxDistanceCfg, RadarPowerCfg, OutputTypeCfg, RCS_Treshold, SendQualityCfg, hex(int.from_bytes(package, "big"))
+def create_200_radar_configuration(
+    ok_distance, distance, ok_radarpower, radarpower,
+    ok_output, output, ok_rcs, rcs,
+    ok_qual, quality, save_nvm,
+):
+    payload = bytearray(8)
+    payload[0] = (
+        (int(bool(ok_distance)) << 0)
+        | (int(bool(ok_radarpower)) << 2)
+        | (int(bool(ok_output)) << 3)
+        | (int(bool(ok_qual)) << 4)
+        | (int(bool(save_nvm)) << 7)
+    )
+    payload[1] = (distance >> 2) & 0xFF
+    payload[2] = (distance & 0x03) << 6
+    payload[4] = ((output & 0x03) << 3) | ((radarpower & 0x07) << 5)
+    payload[5] = ((quality & 0x01) << 2) | (int(bool(save_nvm)) << 7)
+    payload[6] = int(bool(ok_rcs)) | ((rcs & 0x07) << 1)
+    return int.from_bytes(payload, byteorder="big", signed=False)
 
-def read_701_cluster_list(package : bytearray):
-	raw = int.from_bytes(package, "big")
+def read_201_radar_state(package: bytes):
+    _check_payload(package)
+    max_distance_cfg = (package[1] << 2) | (package[2] >> 6)
+    radar_power_cfg = ((package[3] & 0x03) << 1) | ((package[4] >> 7) & 0x01)
+    output_type_cfg = (package[5] >> 2) & 0x03
+    send_quality_cfg = (package[5] >> 4) & 0x01
+    rcs_threshold = (package[7] >> 2) & 0x07
+    return (
+        max_distance_cfg,
+        radar_power_cfg,
+        output_type_cfg,
+        rcs_threshold,
+        send_quality_cfg,
+        hex(int.from_bytes(package, byteorder="big", signed=False)),
+    )
 
-	rcs = raw & 0xFF; 			raw = raw >> 8
-	DynProp = raw & 0x07;		raw = raw >> 3 + 2
-	vrel_lat = raw & 0x1FF; 	raw = raw >> 9
-	vrel_lon = raw & 0x3FF; 	raw = raw >> 10;
-	dist_lat = raw & 0x3FF; 	raw = raw >> 10 + 1;
-	dist_lon = raw & 0x1FFF;	raw = raw >> 13
-	ID = raw & 0xFF;
+def read_701_cluster_list(package: bytes):
+    _check_payload(package)
+    cluster_id = package[0]
+    dist_lon = (package[1] << 5) | (package[2] >> 3)
+    dist_lat = ((package[2] & 0x03) << 8) | package[3]
+    dynamic_property = package[6] & 0x07
+    return cluster_id, dist_lon * 0.2 - 500.0, dist_lat * 0.2 - 102.3, dynamic_property
 
-	# Conversão de coisas
-	new_long = dist_lon * 0.2 + (-500) # de -500 -> 1338.2
-	new_lat = dist_lat * 0.2 + (-102.3) # +- 102
-	new_vlong = vrel_lon * 0.25 + (-128) # +- 128
-	return ID, new_long, new_lat, DynProp
-
-def read_702_quality_info(package : bytearray):
-	raw = int.from_bytes(package, "big")
-	# print(hex(raw))
-	raw = raw >> 24 # Começa no 4° byte
-
-	ambig_state = raw 	& 0x7; 	raw = raw >> 3
-	invalid_state = raw & 0x1F;	raw = raw >> 5
-	PDH0 = raw & 0x7; raw = raw >> 3
-	raw = raw >> 21 # Pula para o id
-	ID = raw
-	# print(hex(raw), "later")
-	
-
-	return ID, PDH0, ambig_state, invalid_state
-
+def read_702_quality_info(package: bytes):
+    _check_payload(package)
+    cluster_id = package[0]
+    pdh0 = package[3] & 0x07
+    ambiguity_state = package[4] & 0x07
+    invalid_state = (package[4] >> 3) & 0x1F
+    return cluster_id, pdh0, ambiguity_state, invalid_state

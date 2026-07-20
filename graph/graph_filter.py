@@ -1,4 +1,4 @@
-from connection.connection_packages_modified import Clusters_messages
+from connection.connection_packages import Clusters_messages
 from interface.filter_schema import DYNAMIC_COLORS_BGR, PDH_KEY, parse_filter_key
 
 

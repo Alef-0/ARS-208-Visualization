@@ -51,6 +51,7 @@ def main(connection, pool, shutdown_event):
     reading = False
     maps_link = "https://www.google.com/maps/search/?api=1&query=0,0"
     next_read = 0.0
+    
     while not shutdown_event.is_set():
         while connection.poll():
             event, _ = connection.recv()

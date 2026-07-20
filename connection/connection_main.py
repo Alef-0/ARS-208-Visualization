@@ -3,7 +3,7 @@ import signal
 import cv2 as cv
 
 from connection.connection_communication import Can_Connection
-from connection.connection_packages_modified import (
+from connection.connection_packages import (
     Clusters_messages,
     create_200_radar_configuration as c200,
     read_201_radar_state as r201,
@@ -48,16 +48,17 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
         for key, selected in initial_values.items()
         if isinstance(key, str) and key.startswith("choose_") and selected
     )
+
     connection = Can_Connection()
     messages = Clusters_messages()
     graph = Graph_radar()
     filters = Filter_graph(initial_values)
+
     try:
         while not shutdown_event.is_set():
             while pipe.poll():
                 event, values = pipe.recv()
-                if event == "STOP":
-                    shutdown_event.set()
+                if event == "STOP": shutdown_event.set()
                 elif event == "conn_radar":
                     connection.change_connection()
                     pool.put(("change_radar", connection.connected))
@@ -89,6 +90,5 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                 elif message.canId == 0x702:
                     messages.fill_702(r702(message.canData))
     finally:
-        if connection.sock:
-            connection.sock.close()
+        if connection.sock: connection.sock.close()
         cv.destroyAllWindows()

@@ -11,7 +11,6 @@ from gi.repository import GLib, Gst
 
 Gst.init(None)
 
-
 class GStreamerPipeline:
     def __init__(self, conn, pool, shutdown_event):
         self.pipeline = None
@@ -64,8 +63,7 @@ class GStreamerPipeline:
         restart = False
         while self.communicate.poll():
             event, value = self.communicate.recv()
-            if event == "STOP":
-                self.shutdown_event.set()
+            if event == "STOP": self.shutdown_event.set()
             elif event == "choose" and value != self.channel:
                 self.channel = value
                 restart = True
@@ -110,8 +108,10 @@ class GStreamerPipeline:
         bus.add_signal_watch()
         bus.connect("message", self.on_message)
         self.main_loop = GLib.MainLoop()
+        
         GLib.timeout_add(10, self.process_commands)
         GLib.timeout_add(10, self.display_latest_frame)
+        
         if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
             self.connected = False
             self.pool.put(("change_cam", False))
@@ -123,11 +123,11 @@ class GStreamerPipeline:
             self.pipeline = None
             self.main_loop = None
 
-
 def gstreamer_main(connection, pool, shutdown_event):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTERM, lambda *_: shutdown_event.set())
     pipeline = GStreamerPipeline(connection, pool, shutdown_event)
+
     try:
         while not shutdown_event.is_set():
             pipeline.process_commands()

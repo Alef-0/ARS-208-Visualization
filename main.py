@@ -21,33 +21,24 @@ def check_popup():
     try:
         while True:
             event, values = window.read()
-            if event in (sg.WIN_CLOSED, "Cancel"):
-                return False
-            if event == "Ok":
-                return values["passwd"] == "Alohomora"
+            if event in (sg.WIN_CLOSED, "Cancel"):  return False
+            if event == "Ok":                       return values["passwd"] == "Alohomora"
     finally:
         window.close()
 
-
 def _join_processes(processes, timeout=3.0):
-    for process in processes:
-        process.join(timeout)
-    for process in processes:
-        if process.is_alive():
-            process.terminate()
-    for process in processes:
-        process.join()
-
+    # Really overkill?
+    for process in processes: process.join(timeout)
+    for process in processes: 
+        if process.is_alive(): process.terminate()
+    for process in processes: process.join()
 
 def _handle_gui_event(event, values, config, send_radar, send_cam, send_gps, shutdown_event):
-    if event == sg.WINDOW_CLOSED:
-        shutdown_event.set()
-        return
+    if event == sg.WINDOW_CLOSED: shutdown_event.set(); return
 
     match event:
         case "Send":
-            if config.connected_radar:
-                send_radar.send((event, values))
+            if config.connected_radar: send_radar.send((event, values))
             config.window["save_nvm"].update(button_color=("black", "white"))
         case "save_nvm":
             if config.connected_radar and check_popup():
@@ -65,51 +56,29 @@ def _handle_gui_event(event, values, config, send_radar, send_cam, send_gps, shu
                 "conn_cam": send_cam,
                 "conn_gps": send_gps,
             }.get(event)
-            if target:
-                target.send((event, None))
-        case "gps_maps":
-            send_gps.send((event, None))
-        case "DISTANCE":
-            config.window["SLIDER_VAL"].update(int(values["DISTANCE"]))
-
+            if target: target.send((event, None))
+        case "gps_maps": send_gps.send((event, None))
+        case "DISTANCE": config.window["SLIDER_VAL"].update(int(values["DISTANCE"]))
 
 def _apply_status_message(message, payload, config):
     match message:
-        case "message_201":
-            config.change_radar(payload)
-        case "change_radar":
-            config.change_connection_radar(payload)
-        case "change_cam":
-            config.change_connection_cam(payload)
-        case "gps_text":
-            config.window[message].update(payload)
-        case "conn_gps":
-            config.change_connection_gps(payload)
-
+        case "message_201":     config.change_radar(payload)
+        case "change_radar":    config.change_connection_radar(payload)
+        case "change_cam":      config.change_connection_cam(payload)
+        case "gps_text":        config.window[message].update(payload)
+        case "conn_gps":        config.change_connection_gps(payload)
 
 def _drain_status_queue(all_queue, config):
     while True:
-        try:
-            message, payload = all_queue.get_nowait()
-        except Empty:
-            return
+        try: message, payload = all_queue.get_nowait()
+        except Empty: return
         _apply_status_message(message, payload, config)
-
 
 def _run_event_loop(config, all_queue, send_radar, send_cam, send_gps, shutdown_event):
     while not shutdown_event.is_set():
         event, values = config.read()
-        _handle_gui_event(
-            event,
-            values,
-            config,
-            send_radar,
-            send_cam,
-            send_gps,
-            shutdown_event,
-        )
+        _handle_gui_event( event, values, config, send_radar, send_cam, send_gps, shutdown_event,)
         _drain_status_queue(all_queue, config)
-
 
 def _shutdown(processes, pipes, config, shutdown_event):
     shutdown_event.set()
@@ -121,7 +90,6 @@ def _shutdown(processes, pipes, config, shutdown_event):
             pass
     _join_processes(processes)
     config.window.close()
-
 
 def main():
     shutdown_event = Event()
@@ -151,22 +119,9 @@ def main():
         process.start()
 
     try:
-        _run_event_loop(
-            config,
-            all_queue,
-            send_radar,
-            send_cam,
-            send_gps,
-            shutdown_event,
-        )
+        _run_event_loop( config, all_queue, send_radar, send_cam, send_gps, shutdown_event,)
     finally:
-        _shutdown(
-            processes,
-            (send_radar, send_cam, send_gps),
-            config,
-            shutdown_event,
-        )
-
+        _shutdown(processes, (send_radar, send_cam, send_gps), config, shutdown_event,)
 
 if __name__ == "__main__":
     main()
