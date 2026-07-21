@@ -8,7 +8,7 @@ from typing import Callable, Iterable
 
 import numpy as np
 
-from connection.connection_packages import RadarPoint
+from connection.connection_packages import MISSING_QUALITY, RadarObject, RadarPoint
 
 try:
     from pypcd4 import PointCloud
@@ -16,7 +16,7 @@ except ImportError:  # Reported through the GUI when recording starts.
     PointCloud = None
 
 
-PCD_FIELDS = (
+CLUSTER_PCD_FIELDS = (
     "ID",
     "dist_long",
     "dist_latitude",
@@ -28,7 +28,7 @@ PCD_FIELDS = (
     "ambiguity_state",
     "invalid_flag",
 )
-PCD_TYPES = (
+CLUSTER_PCD_TYPES = (
     np.uint32,
     np.float32,
     np.float32,
@@ -40,9 +40,57 @@ PCD_TYPES = (
     np.uint32,
     np.uint32,
 )
+OBJECT_PCD_FIELDS = (
+    "ID",
+    "dist_long",
+    "dist_latitude",
+    "velocity_longitude",
+    "velocity_latitude",
+    "dynamic_property",
+    "rcs",
+    "dist_long_rms",
+    "velocity_longitude_rms",
+    "dist_latitude_rms",
+    "velocity_latitude_rms",
+    "acceleration_latitude_rms",
+    "acceleration_longitude_rms",
+    "orientation_rms",
+    "measurement_state",
+    "probability_of_existence",
+)
+OBJECT_PCD_TYPES = (
+    np.uint32,
+    np.float32,
+    np.float32,
+    np.float32,
+    np.float32,
+    np.uint32,
+    np.float32,
+    np.float32,
+    np.float32,
+    np.float32,
+    np.float32,
+    np.float32,
+    np.float32,
+    np.float32,
+    np.uint32,
+    np.uint32,
+)
+
+# Backwards-compatible names for code that expects the cluster schema.
+PCD_FIELDS = CLUSTER_PCD_FIELDS
+PCD_TYPES = CLUSTER_PCD_TYPES
 RADAR_LETTERS = {1: "A", 2: "B", 3: "C"}
 METADATA_FLUSH_SECONDS = 1.0
 _STOP = object()
+
+
+def _float_or_nan(value: float | None) -> float:
+    return np.nan if value is None else value
+
+
+def _int_or_missing(value: int | None) -> int:
+    return MISSING_QUALITY if value is None else value
 
 
 class PointCloudRecorder:
@@ -81,12 +129,20 @@ class PointCloudRecorder:
         )
         self._thread.start()
 
-    def submit(self, points: Iterable[RadarPoint], recorded_at: datetime) -> bool:
+    def submit(
+        self,
+        points: Iterable[RadarPoint | RadarObject],
+        recorded_at: datetime,
+        frame_type: str = "cluster",
+    ) -> bool:
         if self.error is not None:
+            return False
+        if frame_type not in ("cluster", "object"):
+            self.error = ValueError(f"Unsupported radar frame type: {frame_type}")
             return False
         try:
             timestamp = recorded_at.isoformat(timespec="microseconds")
-            self._queue.put_nowait((tuple(points), timestamp))
+            self._queue.put_nowait((tuple(points), timestamp, frame_type))
             return True
         except queue.Full:
             self.error = RuntimeError(
@@ -113,10 +169,10 @@ class PointCloudRecorder:
                     if item is _STOP:
                         self._flush_metadata(force=True)
                         return
-                    points, recorded_at = item
+                    points, recorded_at, frame_type = item
                     frame_number = self.frames_written + 1
                     path = self.folder / f"frame_{frame_number:06d}.pcd"
-                    self._save(path, points)
+                    self._save(path, points, frame_type)
                     self.frames_written = frame_number
                     self._timestamps[path.name] = recorded_at
                     self._metadata_dirty = True
@@ -151,22 +207,52 @@ class PointCloudRecorder:
         temporary_path.replace(self.timestamps_path)
 
     @staticmethod
-    def _save(path: Path, points: tuple[RadarPoint, ...]) -> None:
-        values = np.empty((len(points), len(PCD_FIELDS)), dtype=object)
-        for row, point in enumerate(points):
-            values[row] = (
-                point.cluster_id,
-                point.dist_long,
-                point.dist_latitude,
-                point.velocity_longitude,
-                point.velocity_latitude,
-                point.dynamic_property,
-                point.rcs,
-                point.pdh,
-                point.ambiguity_state,
-                point.invalid_flag,
-            )
-        PointCloud.from_points(values, PCD_FIELDS, PCD_TYPES).save(str(path))
+    def _save(
+        path: Path,
+        points: tuple[RadarPoint | RadarObject, ...],
+        frame_type: str,
+    ) -> None:
+        if frame_type == "cluster":
+            fields, types = CLUSTER_PCD_FIELDS, CLUSTER_PCD_TYPES
+            values = np.empty((len(points), len(fields)), dtype=object)
+            for row, point in enumerate(points):
+                values[row] = (
+                    point.cluster_id,
+                    point.dist_long,
+                    point.dist_latitude,
+                    point.velocity_longitude,
+                    point.velocity_latitude,
+                    point.dynamic_property,
+                    point.rcs,
+                    point.pdh,
+                    point.ambiguity_state,
+                    point.invalid_flag,
+                )
+        elif frame_type == "object":
+            fields, types = OBJECT_PCD_FIELDS, OBJECT_PCD_TYPES
+            values = np.empty((len(points), len(fields)), dtype=object)
+            for row, obj in enumerate(points):
+                values[row] = (
+                    obj.object_id,
+                    obj.dist_long,
+                    obj.dist_latitude,
+                    obj.velocity_longitude,
+                    obj.velocity_latitude,
+                    obj.dynamic_property,
+                    obj.rcs,
+                    _float_or_nan(obj.dist_long_rms),
+                    _float_or_nan(obj.velocity_longitude_rms),
+                    _float_or_nan(obj.dist_latitude_rms),
+                    _float_or_nan(obj.velocity_latitude_rms),
+                    _float_or_nan(obj.acceleration_latitude_rms),
+                    _float_or_nan(obj.acceleration_longitude_rms),
+                    _float_or_nan(obj.orientation_rms),
+                    _int_or_missing(obj.measurement_state),
+                    _int_or_missing(obj.probability_of_existence),
+                )
+        else:
+            raise ValueError(f"Unsupported radar frame type: {frame_type}")
+        PointCloud.from_points(values, fields, types).save(str(path))
 
 
 class RadarRecordingSession:
@@ -218,11 +304,12 @@ class RadarRecordingSession:
     def submit(
         self,
         channel: int,
-        points: Iterable[RadarPoint],
+        points: Iterable[RadarPoint | RadarObject],
         recorded_at: datetime,
+        frame_type: str = "cluster",
     ) -> bool:
         recorder = self.recorders.get(channel)
-        return recorder.submit(points, recorded_at) if recorder else False
+        return recorder.submit(points, recorded_at, frame_type) if recorder else False
 
     def poll_error(self) -> Exception | None:
         for recorder in self.recorders.values():
