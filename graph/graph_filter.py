@@ -49,13 +49,15 @@ class Filter_graph:
 
     def filter_points(self, messages: Clusters_messages):
         all_x, all_y, colors = [], [], []
-        ids = messages.x.keys() & messages.y.keys() & messages.dyn.keys()
-        ids &= messages.pdh.keys() & messages.ambg.keys() & messages.inv.keys()
-        for cluster_id in ids:
-            dyn = messages.dyn[cluster_id]
-            if not self.allowed(dyn, messages.pdh[cluster_id], messages.ambg[cluster_id], messages.inv[cluster_id]):
+        for point in messages.snapshot():
+            if not self.allowed(
+                point.dynamic_property,
+                point.pdh,
+                point.ambiguity_state,
+                point.invalid_flag,
+            ):
                 continue
-            all_x.append(messages.x[cluster_id])
-            all_y.append(messages.y[cluster_id])
-            colors.append(DYNAMIC_COLORS_BGR[dyn])
+            all_x.append(point.dist_latitude)
+            all_y.append(point.dist_long)
+            colors.append(DYNAMIC_COLORS_BGR[point.dynamic_property])
         return all_x, all_y, colors

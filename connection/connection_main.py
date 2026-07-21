@@ -1,3 +1,4 @@
+import queue
 import signal
 
 import cv2 as cv
@@ -12,6 +13,19 @@ from connection.connection_packages import (
 )
 from graph.graph_draw import Graph_radar
 from graph.graph_filter import Filter_graph
+from recording import RadarRecordingSession
+
+RADAR_CHANNELS = (1, 2, 3)
+
+
+def _put_status(pool, message, payload, *, critical=False):
+    try:
+        if critical:
+            pool.put((message, payload), timeout=0.2)
+        else:
+            pool.put_nowait((message, payload))
+    except queue.Full:
+        pass
 
 
 def treat_201_message(channel, payload, pool):
@@ -23,7 +37,7 @@ def treat_201_message(channel, payload, pool):
         f"RCS_{channel}": ["Standard", "High Sensitivity"][rcs_threshold],
         f"EXT_{channel}": ["No", "Ok"][send_quality],
     }
-    pool.put(("message_201", values))
+    _put_status(pool, "message_201", values)
 
 
 def send_configuration_message(values, connection, save_nvm):
@@ -34,10 +48,32 @@ def send_configuration_message(values, connection, save_nvm):
         values["CHECK_RCS"], ["STANDARD", "HIGH SENSITIVITY"].index(values["RCS"]),
         values["CHECK_QUALITY"], 1, save_nvm,
     )
-    for channel in range(1, 4):
+    for channel in RADAR_CHANNELS:
         if values.get(f"send_{channel}") or values.get("send_all"):
             message = connection.packet_struct.pack(8, 0, 0x200, 0, data.to_bytes(8, "big"), channel)
             connection.send_message(message)
+
+
+def _stop_recording(recording, pool, recording_ready):
+    recording_ready.clear()
+    if not recording.active:
+        return
+    try:
+        counts = recording.stop()
+        _put_status(
+            pool,
+            "recording_state",
+            {"active": False, "counts": counts},
+            critical=True,
+        )
+    except Exception as error:
+        _put_status(pool, "recording_error", str(error), critical=True)
+        _put_status(
+            pool,
+            "recording_state",
+            {"active": False, "counts": {}},
+            critical=True,
+        )
 
 
 def create_connection_communication(initial_values, pipe, pool, shutdown_event):
@@ -50,45 +86,96 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
     )
 
     connection = Can_Connection()
-    messages = Clusters_messages()
+    messages = {channel: Clusters_messages() for channel in RADAR_CHANNELS}
+    recording_ready: dict[int, bool] = {}
     graph = Graph_radar()
     filters = Filter_graph(initial_values)
 
+    def report_progress(channel, count):
+        _put_status(pool, "recording_progress", {"channel": channel, "count": count})
+
+    recording = RadarRecordingSession(report_progress)
+
     try:
         while not shutdown_event.is_set():
-            while pipe.poll():
-                event, values = pipe.recv()
-                if event == "STOP": shutdown_event.set()
-                elif event == "conn_radar":
-                    connection.change_connection()
-                    pool.put(("change_radar", connection.connected))
-                    cv.destroyAllWindows()
-                elif event == "Send" and connection.connected:
-                    send_configuration_message(values, connection, False)
-                elif event == "save_nvm" and connection.connected:
-                    send_configuration_message(values, connection, True)
-                elif event == "choose":
-                    radar_choice = values
-                elif isinstance(event, str) and event.startswith("filter"):
-                    filters.update_values(event, values)
+            try:
+                while pipe.poll():
+                    event, values = pipe.recv()
+                    if event == "STOP":
+                        shutdown_event.set()
+                    elif event == "conn_radar":
+                        connection.change_connection()
+                        _put_status(pool, "change_radar", connection.connected, critical=True)
+                        cv.destroyAllWindows()
+                        if not connection.connected:
+                            _stop_recording(recording, pool, recording_ready)
+                    elif event == "Send" and connection.connected:
+                        send_configuration_message(values, connection, False)
+                    elif event == "save_nvm" and connection.connected:
+                        send_configuration_message(values, connection, True)
+                    elif event == "choose":
+                        radar_choice = values
+                    elif event == "record_start":
+                        if not connection.connected:
+                            _put_status(
+                                pool,
+                                "recording_error",
+                                "Connect the radar before starting a recording",
+                                critical=True,
+                            )
+                            continue
+                        try:
+                            folders = recording.start(values["folder"], values["channels"])
+                            recording_ready.clear()
+                            recording_ready.update({channel: False for channel in recording.channels})
+                            _put_status(
+                                pool,
+                                "recording_state",
+                                {"active": True, "folders": folders, "counts": {}},
+                                critical=True,
+                            )
+                        except Exception as error:
+                            _put_status(pool, "recording_error", str(error), critical=True)
+                    elif event == "record_stop":
+                        _stop_recording(recording, pool, recording_ready)
+                    elif isinstance(event, str) and event.startswith("filter"):
+                        filters.update_values(event, values)
+            except (EOFError, OSError):
+                shutdown_event.set()
+
+            recording_error = recording.poll_error()
+            if recording_error is not None:
+                _stop_recording(recording, pool, recording_ready)
+
             if not connection.connected:
                 shutdown_event.wait(0.01)
                 continue
+
             connection.read_chunk()
             while connection.can_create_can():
                 message = connection.create_package()
+                channel = message.canChannel
                 if message.canId == 0x201:
-                    treat_201_message(message.canChannel, message.canData, pool)
-                if message.canChannel != radar_choice:
+                    treat_201_message(channel, message.canData, pool)
+                if channel not in messages:
                     continue
+
+                channel_messages = messages[channel]
                 if message.canId == 0x600:
-                    x, y, colors = filters.filter_points(messages)
-                    graph.show_points(x, y, colors)
-                    messages.clear()
+                    if channel == radar_choice:
+                        x, y, colors = filters.filter_points(channel_messages)
+                        graph.show_points(x, y, colors)
+                    if recording_ready.get(channel, False):
+                        recording.submit(channel, channel_messages.snapshot())
+                    channel_messages.clear()
+                    if channel in recording.channels:
+                        recording_ready[channel] = True
                 elif message.canId == 0x701:
-                    messages.fill_701(r701(message.canData))
+                    channel_messages.fill_701(r701(message.canData))
                 elif message.canId == 0x702:
-                    messages.fill_702(r702(message.canData))
+                    channel_messages.fill_702(r702(message.canData))
     finally:
-        if connection.sock: connection.sock.close()
+        _stop_recording(recording, pool, recording_ready)
+        if connection.sock:
+            connection.sock.close()
         cv.destroyAllWindows()

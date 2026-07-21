@@ -1,3 +1,4 @@
+from pathlib import Path
 import re
 import signal
 from multiprocessing import get_context
@@ -35,6 +36,23 @@ def _join_processes(processes, timeout=3.0):
     for process in processes: process.join()
 
 
+def _start_recording(values, config, send_radar):
+    folder = Path(values.get("record_folder", "")).expanduser()
+    channels = [
+        channel
+        for channel in range(1, 4)
+        if values.get(f"record_radar_{channel}")
+    ]
+    if not folder.is_dir():
+        sg.popup_error("Select an existing destination folder", title="Recording error")
+        return
+    if not channels:
+        sg.popup_error("Select at least one radar to record", title="Recording error")
+        return
+    config.set_recording_pending(True)
+    send_radar.send(("record_start", {"folder": str(folder.resolve()), "channels": channels}))
+
+
 def _handle_gui_event(event, values, config, send_radar, send_cam, send_gps, shutdown_event):
     if event == sg.WINDOW_CLOSED: shutdown_event.set(); return
 
@@ -46,6 +64,12 @@ def _handle_gui_event(event, values, config, send_radar, send_cam, send_gps, shu
             if config.connected_radar and check_popup():
                 config.window["save_nvm"].update(button_color=("white", "green"))
                 send_radar.send((event, values))
+        case "record_toggle":
+            if config.recording:
+                config.set_recording_pending(False)
+                send_radar.send(("record_stop", None))
+            else:
+                _start_recording(values, config, send_radar)
         case key if isinstance(key, str) and key.startswith("filter"):
             send_radar.send((event, values))
         case key if isinstance(key, str) and re.match(r"^choose_", key):
@@ -65,11 +89,14 @@ def _handle_gui_event(event, values, config, send_radar, send_cam, send_gps, shu
 
 def _apply_status_message(message, payload, config):
     match message:
-        case "message_201":     config.change_radar(payload)
-        case "change_radar":    config.change_connection_radar(payload)
-        case "change_cam":      config.change_connection_cam(payload)
-        case "gps_text":        config.window[message].update(payload)
-        case "conn_gps":        config.change_connection_gps(payload)
+        case "message_201":       config.change_radar(payload)
+        case "change_radar":      config.change_connection_radar(payload)
+        case "change_cam":        config.change_connection_cam(payload)
+        case "gps_text":          config.window[message].update(payload)
+        case "conn_gps":          config.change_connection_gps(payload)
+        case "recording_state":   config.change_recording(payload)
+        case "recording_progress": config.change_recording_progress(payload)
+        case "recording_error":   config.show_recording_error(payload)
 
 
 def _drain_status_queue(all_queue, config):
@@ -109,7 +136,7 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     sg.set_options(font=("Helvetica", 12))
-    all_queue = process_context.Queue(5)
+    all_queue = process_context.Queue(32)
 
     receive_radar, send_radar = process_context.Pipe()
     receive_cam, send_cam = process_context.Pipe()
