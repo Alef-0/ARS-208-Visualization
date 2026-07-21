@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import FreeSimpleGUI as sg
 
 from interface.filter_schema import (
@@ -81,21 +83,66 @@ class Configurations:
             title_location=sg.TITLE_LOCATION_TOP,
         )
         column1 = sg.Column([
-            [sg.Checkbox("Radar Power", key="CHECK_RPW", default=True), sg.Push(), sg.Combo(self.POWER, self.POWER[3], key="RPW", readonly=True)],
-            [sg.Checkbox("RCS Threshold", key="CHECK_RCS", default=True), sg.Combo(self.RCS, self.RCS[1], key="RCS", readonly=True)],
-        ])
+            [
+                sg.Checkbox("Radar Power", key="CHECK_RPW", default=True),
+                sg.Push(),
+                sg.Combo(self.POWER, self.POWER[3], key="RPW", readonly=True),
+            ],
+            [
+                sg.Checkbox("RCS Threshold", key="CHECK_RCS", default=True),
+                sg.Push(),
+                sg.Combo(self.RCS, self.RCS[1], key="RCS", readonly=True),
+            ],
+            [sg.Button("Send", expand_x=True), choices],
+            [
+                sg.Button(
+                    "SAVE in Non Volatile Memory",
+                    key="save_nvm",
+                    expand_x=True,
+                    button_color=("black", "white"),
+                )
+            ],
+        ], expand_x=True)
         column2 = sg.Column([
-            [sg.Checkbox("Output Type", key="CHECK_OUT", default=True), sg.Combo(self.OUTPUT, self.OUTPUT[2], key="OUT", readonly=True, size=(15, 1))],
+            [
+                sg.Checkbox("Output Type", key="CHECK_OUT", default=True),
+                sg.Push(),
+                sg.Combo(self.OUTPUT, self.OUTPUT[2], key="OUT", readonly=True, size=(15, 1)),
+            ],
             [sg.Push(), sg.Checkbox("Send Quality", key="CHECK_QUALITY", default=True), sg.Push()],
-        ])
+            [
+                sg.Button(
+                    "OPEN RADAR",
+                    key="conn_radar",
+                    expand_x=True,
+                    button_color=("white", "green"),
+                )
+            ],
+            [
+                sg.Button(
+                    "OPEN CAM",
+                    key="conn_cam",
+                    expand_x=True,
+                    button_color=("white", "green"),
+                )
+            ],
+        ], expand_x=True)
         self.options = sg.Frame("Options", [
-            [sg.Checkbox("Max Distance", key="CHECK_DISTANCE", default=True), sg.Text("196", key="SLIDER_VAL"),
-             sg.Slider((196, 260), 196, orientation="h", resolution=1, key="DISTANCE", disable_number_display=True, enable_events=True, expand_x=True)],
+            [
+                sg.Checkbox("Max Distance", key="CHECK_DISTANCE", default=True),
+                sg.Text("196", key="SLIDER_VAL"),
+                sg.Slider(
+                    (196, 260),
+                    196,
+                    orientation="h",
+                    resolution=1,
+                    key="DISTANCE",
+                    disable_number_display=True,
+                    enable_events=True,
+                    expand_x=True,
+                ),
+            ],
             [column1, sg.VSep(), column2],
-            [sg.Button("Send"), choices, sg.VSep(),
-             sg.Button("OPEN RADAR", key="conn_radar", button_color=("white", "green")),
-             sg.Button("OPEN CAM", key="conn_cam", button_color=("white", "green"))],
-            [sg.Button("SAVE in Non Volatile Memory", key="save_nvm", expand_x=True, button_color=("black", "white"))],
         ], expand_x=True, title_location=sg.TITLE_LOCATION_TOP)
 
     @staticmethod
@@ -155,7 +202,7 @@ class Configurations:
         return [
             [
                 sg.Text("Destination folder"),
-                sg.Input(key="record_folder", expand_x=True),
+                sg.Input(default_text=str(Path.cwd()), key="record_folder", expand_x=True),
                 sg.FolderBrowse("SELECT", key="record_browse", target="record_folder"),
             ],
             radar_choices,
