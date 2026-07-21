@@ -7,6 +7,7 @@ from interface.filter_schema import (
     DYNAMIC_PROPERTY_OPTIONS,
     INVALID_STATE_OPTIONS,
     PDH_KEY,
+    RCS_KEY,
 )
 
 
@@ -164,15 +165,20 @@ class Configurations:
         dynamic = sg.Column(dynamic_rows, justification="center")
 
         pdh = sg.Column([
-            [sg.Text("PDH0 - False Alarm Probability (zero is invalid)", justification="center")],
+            [sg.Text("PDH0 - False Alarm Probability (zero is invalid)", expand_x=True, justification="center")],
             [sg.Slider((1, 7), default_value=3, orientation="h", tick_interval=1,
                        disable_number_display=True, expand_x=True, enable_events=True, key=PDH_KEY)],
-        ])
+        ], expand_x=True)
+        rcs = sg.Column([
+            [sg.Text("Minimum RCS (dBm²)", expand_x=True, justification="center")],
+            [sg.Slider((-64.0, 63.5), default_value=-64.0, orientation="h", resolution=0.5,
+                       expand_x=True, enable_events=True, key=RCS_KEY)],
+        ], expand_x=True)
         ambiguity = sg.Column([
             [sg.Text("Ambiguity State", justification="center")],
             [*sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[:2]), [])],
             [*sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[2:]), [])],
-        ], justification="center")
+        ], justification="center", size=(28, 4))
 
         invalid_rows = []
         for start in (0, 9):
@@ -188,9 +194,9 @@ class Configurations:
         return [
             [dynamic],
             [sg.HorizontalSeparator()],
-            [pdh, sg.VSep(), ambiguity],
+            [pdh, sg.VSep(), rcs],
             [sg.HorizontalSeparator()],
-            [invalid],
+            [ambiguity, sg.VSep(), invalid],
         ]
 
     @staticmethod
