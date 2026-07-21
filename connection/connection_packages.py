@@ -186,20 +186,6 @@ def _check_payload(payload: bytes) -> None:
         raise ValueError(f"Expected an 8-byte CAN payload, got {len(payload)}")
 
 
-def _extract_motorola(payload: bytes, start: int, length: int) -> int:
-    """Extract a Motorola signal where ``start`` identifies its least-significant bit."""
-    _check_payload(payload)
-    value = 0
-    bit = start
-    for value_bit in range(length):
-        byte_index, bit_index = divmod(bit, 8)
-        if not 0 <= byte_index < len(payload):
-            raise ValueError(f"Signal at start {start} with length {length} exceeds payload")
-        value |= ((payload[byte_index] >> bit_index) & 1) << value_bit
-        bit = bit - 15 if bit_index == 7 else bit + 1
-    return value
-
-
 def create_200_radar_configuration(
     ok_distance, distance, ok_radarpower, radarpower,
     ok_output, output, ok_rcs, rcs,
@@ -249,30 +235,47 @@ def read_60a_object_status(package: bytes) -> ObjectStatus:
 
 def read_60b_object_general(package: bytes):
     _check_payload(package)
+    object_id = package[0]
+    dist_long = (package[1] << 5) | (package[2] >> 3)
+    dist_latitude = ((package[2] & 0x07) << 8) | package[3]
+    velocity_longitude = (package[4] << 2) | (package[5] >> 6)
+    velocity_latitude = ((package[5] & 0x3F) << 3) | (package[6] >> 5)
+    dynamic_property = package[6] & 0x07
+    rcs = package[7]
     return (
-        package[0],
-        _extract_motorola(package, 19, 13) * 0.2 - 500.0,
-        _extract_motorola(package, 24, 11) * 0.2 - 204.6,
-        _extract_motorola(package, 46, 10) * 0.25 - 128.0,
-        _extract_motorola(package, 53, 9) * 0.25 - 64.0,
-        _extract_motorola(package, 48, 3),
-        package[7] * 0.5 - 64.0,
+        object_id,
+        dist_long * 0.2 - 500.0,
+        dist_latitude * 0.2 - 204.6,
+        velocity_longitude * 0.25 - 128.0,
+        velocity_latitude * 0.25 - 64.0,
+        dynamic_property,
+        rcs * 0.5 - 64.0,
     )
 
 
 def read_60c_object_quality(package: bytes):
     _check_payload(package)
+    object_id = package[0]
+    dist_long_rms = package[1] >> 3
+    velocity_longitude_rms = (package[2] >> 1) & 0x1F
+    dist_latitude_rms = ((package[1] & 0x07) << 2) | (package[2] >> 6)
+    velocity_latitude_rms = ((package[2] & 0x01) << 4) | (package[3] >> 4)
+    acceleration_latitude_rms = (package[4] >> 2) & 0x1F
+    acceleration_longitude_rms = ((package[3] & 0x0F) << 1) | (package[4] >> 7)
+    orientation_rms = ((package[4] & 0x03) << 3) | (package[5] >> 5)
+    measurement_state = (package[6] >> 2) & 0x07
+    probability_of_existence = package[6] >> 5
     return (
-        package[0],
-        KINEMATIC_RMS_VALUES[_extract_motorola(package, 11, 5)],
-        KINEMATIC_RMS_VALUES[_extract_motorola(package, 17, 5)],
-        KINEMATIC_RMS_VALUES[_extract_motorola(package, 22, 5)],
-        KINEMATIC_RMS_VALUES[_extract_motorola(package, 28, 5)],
-        KINEMATIC_RMS_VALUES[_extract_motorola(package, 34, 5)],
-        KINEMATIC_RMS_VALUES[_extract_motorola(package, 39, 5)],
-        ORIENTATION_RMS_VALUES[_extract_motorola(package, 45, 5)],
-        _extract_motorola(package, 50, 3),
-        _extract_motorola(package, 53, 3),
+        object_id,
+        KINEMATIC_RMS_VALUES[dist_long_rms],
+        KINEMATIC_RMS_VALUES[velocity_longitude_rms],
+        KINEMATIC_RMS_VALUES[dist_latitude_rms],
+        KINEMATIC_RMS_VALUES[velocity_latitude_rms],
+        KINEMATIC_RMS_VALUES[acceleration_latitude_rms],
+        KINEMATIC_RMS_VALUES[acceleration_longitude_rms],
+        ORIENTATION_RMS_VALUES[orientation_rms],
+        measurement_state,
+        probability_of_existence,
     )
 
 
