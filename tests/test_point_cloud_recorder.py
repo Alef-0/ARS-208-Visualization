@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -65,16 +67,23 @@ class PointCloudRecorderTests(unittest.TestCase):
         self.assertEqual(counts, {1: 0, 3: 0})
 
     def test_stop_flushes_frames_and_preserves_field_order(self):
+        recorded_at = datetime(2026, 7, 21, 18, 30, 45, 123456, tzinfo=timezone.utc)
         with TemporaryDirectory() as folder:
             session = recorder_module.RadarRecordingSession()
             paths = session.start(folder, (2,))
-            self.assertTrue(session.submit(2, (self.point(),)))
+            self.assertTrue(session.submit(2, (self.point(),), recorded_at))
             counts = session.stop()
 
-            frame_path = Path(paths[2]) / "frame_000001.pcd"
+            recording_folder = Path(paths[2])
+            frame_path = recording_folder / "frame_000001.pcd"
             self.assertTrue(frame_path.is_file())
+            timestamps = json.loads((recording_folder / "timestamps.json").read_text())
 
         self.assertEqual(counts, {2: 1})
+        self.assertEqual(
+            timestamps,
+            {"frame_000001.pcd": recorded_at.isoformat(timespec="microseconds")},
+        )
         cloud, = FakePointCloud.calls
         self.assertEqual(cloud.fields, recorder_module.PCD_FIELDS)
         self.assertTrue(all(np.dtype(dtype).itemsize == 4 for dtype in cloud.types))
@@ -84,16 +93,28 @@ class PointCloudRecorderTests(unittest.TestCase):
         ))
 
     def test_empty_radar_frame_is_stored(self):
+        recorded_at = datetime.now(timezone.utc)
         with TemporaryDirectory() as folder:
             session = recorder_module.RadarRecordingSession()
             paths = session.start(folder, (1,))
-            self.assertTrue(session.submit(1, ()))
+            self.assertTrue(session.submit(1, (), recorded_at))
             counts = session.stop()
 
-            self.assertTrue((Path(paths[1]) / "frame_000001.pcd").is_file())
+            recording_folder = Path(paths[1])
+            self.assertTrue((recording_folder / "frame_000001.pcd").is_file())
+            timestamps = json.loads((recording_folder / "timestamps.json").read_text())
 
         self.assertEqual(counts, {1: 1})
+        self.assertEqual(list(timestamps), ["frame_000001.pcd"])
         self.assertEqual(FakePointCloud.calls[0].values.shape, (0, 10))
+
+    def test_timestamp_file_exists_before_first_frame(self):
+        with TemporaryDirectory() as folder:
+            session = recorder_module.RadarRecordingSession()
+            paths = session.start(folder, (3,))
+            timestamp_path = Path(paths[3]) / "timestamps.json"
+            self.assertEqual(json.loads(timestamp_path.read_text()), {})
+            session.stop()
 
 
 if __name__ == "__main__":
