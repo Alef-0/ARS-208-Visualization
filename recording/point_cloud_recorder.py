@@ -1,7 +1,9 @@
 from datetime import datetime
+import json
 from pathlib import Path
 import queue
 import threading
+import time
 from typing import Callable, Iterable
 
 import numpy as np
@@ -39,6 +41,7 @@ PCD_TYPES = (
     np.uint32,
 )
 RADAR_LETTERS = {1: "A", 2: "B", 3: "C"}
+METADATA_FLUSH_SECONDS = 1.0
 _STOP = object()
 
 
@@ -62,9 +65,14 @@ class PointCloudRecorder:
         self.channel = channel
         self.folder = root / f"recording_{RADAR_LETTERS[channel]}_{timestamp}"
         self.folder.mkdir(parents=True, exist_ok=False)
+        self.timestamps_path = self.folder / "timestamps.json"
         self.progress_callback = progress_callback
         self.frames_written = 0
         self.error: Exception | None = None
+        self._timestamps: dict[str, str] = {}
+        self._metadata_dirty = False
+        self._last_metadata_flush = time.monotonic()
+        self._write_timestamps()
         self._queue: queue.Queue = queue.Queue(maxsize=queue_size)
         self._thread = threading.Thread(
             target=self._write_loop,
@@ -73,11 +81,12 @@ class PointCloudRecorder:
         )
         self._thread.start()
 
-    def submit(self, points: Iterable[RadarPoint]) -> bool:
+    def submit(self, points: Iterable[RadarPoint], recorded_at: datetime) -> bool:
         if self.error is not None:
             return False
         try:
-            self._queue.put_nowait(tuple(points))
+            timestamp = recorded_at.isoformat(timespec="microseconds")
+            self._queue.put_nowait((tuple(points), timestamp))
             return True
         except queue.Full:
             self.error = RuntimeError(
@@ -99,20 +108,47 @@ class PointCloudRecorder:
     def _write_loop(self) -> None:
         try:
             while True:
-                points = self._queue.get()
+                item = self._queue.get()
                 try:
-                    if points is _STOP:
+                    if item is _STOP:
+                        self._flush_metadata(force=True)
                         return
+                    points, recorded_at = item
                     frame_number = self.frames_written + 1
                     path = self.folder / f"frame_{frame_number:06d}.pcd"
                     self._save(path, points)
                     self.frames_written = frame_number
+                    self._timestamps[path.name] = recorded_at
+                    self._metadata_dirty = True
+                    self._flush_metadata()
                     if self.progress_callback:
                         self.progress_callback(self.channel, self.frames_written)
                 finally:
                     self._queue.task_done()
         except Exception as error:
             self.error = error
+            try:
+                self._flush_metadata(force=True)
+            except Exception:
+                pass
+
+    def _flush_metadata(self, *, force: bool = False) -> None:
+        if not self._metadata_dirty:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_metadata_flush < METADATA_FLUSH_SECONDS:
+            return
+        self._write_timestamps()
+        self._metadata_dirty = False
+        self._last_metadata_flush = now
+
+    def _write_timestamps(self) -> None:
+        temporary_path = self.timestamps_path.with_suffix(".json.tmp")
+        temporary_path.write_text(
+            json.dumps(self._timestamps, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(self.timestamps_path)
 
     @staticmethod
     def _save(path: Path, points: tuple[RadarPoint, ...]) -> None:
@@ -179,9 +215,14 @@ class RadarRecordingSession:
         self.recorders = created
         return {channel: str(recorder.folder) for channel, recorder in created.items()}
 
-    def submit(self, channel: int, points: Iterable[RadarPoint]) -> bool:
+    def submit(
+        self,
+        channel: int,
+        points: Iterable[RadarPoint],
+        recorded_at: datetime,
+    ) -> bool:
         recorder = self.recorders.get(channel)
-        return recorder.submit(points) if recorder else False
+        return recorder.submit(points, recorded_at) if recorder else False
 
     def poll_error(self) -> Exception | None:
         for recorder in self.recorders.values():
