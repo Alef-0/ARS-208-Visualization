@@ -9,6 +9,7 @@ import FreeSimpleGUI as sg
 from camera.camera_gstreamer import gstreamer_main
 from connection.connection_main import create_connection_communication
 from gps.gps_connection import main as gps_main
+from interface.filter_schema import RCS_KEY
 from menu_configurations import Configurations
 
 
@@ -71,6 +72,8 @@ def _handle_gui_event(event, values, config, send_radar, send_cam, send_gps, shu
             else:
                 _start_recording(values, config, send_radar)
         case key if isinstance(key, str) and key.startswith("filter"):
+            if event == RCS_KEY:
+                config.window["RCS_FILTER_VALUE"].update(f"{values[RCS_KEY]:.1f}")
             send_radar.send((event, values))
         case key if isinstance(key, str) and re.match(r"^choose_", key):
             choice = int(event.rsplit("_", 1)[1])
