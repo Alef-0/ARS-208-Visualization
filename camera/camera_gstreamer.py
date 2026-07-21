@@ -11,6 +11,7 @@ from gi.repository import GLib, Gst
 
 Gst.init(None)
 
+
 class GStreamerPipeline:
     def __init__(self, conn, pool, shutdown_event):
         self.pipeline = None
@@ -21,6 +22,7 @@ class GStreamerPipeline:
         self.pool = pool
         self.shutdown_event = shutdown_event
         self.connected = False
+        self.source_ids = []
 
     @staticmethod
     def create_url(channel):
@@ -61,24 +63,29 @@ class GStreamerPipeline:
 
     def process_commands(self):
         restart = False
-        while self.communicate.poll():
-            event, value = self.communicate.recv()
-            if event == "STOP": self.shutdown_event.set()
-            elif event == "choose" and value != self.channel:
-                self.channel = value
-                restart = True
-            elif event == "conn_cam":
-                if self.connected:
-                    self.connected = False
-                    self.pool.put(("change_cam", False))
+        try:
+            while self.communicate.poll():
+                event, value = self.communicate.recv()
+                if event == "STOP":
+                    self.shutdown_event.set()
+                elif event == "choose" and value != self.channel:
+                    self.channel = value
                     restart = True
-                else:
-                    try:
-                        with socket.create_connection(("192.168.1.108", 554), timeout=2):
-                            self.connected = True
-                            self.pool.put(("change_cam", True))
-                    except OSError:
+                elif event == "conn_cam":
+                    if self.connected:
+                        self.connected = False
                         self.pool.put(("change_cam", False))
+                        restart = True
+                    else:
+                        try:
+                            with socket.create_connection(("192.168.1.108", 554), timeout=2):
+                                self.connected = True
+                                self.pool.put(("change_cam", True))
+                        except OSError:
+                            self.pool.put(("change_cam", False))
+        except (EOFError, OSError):
+            self.shutdown_event.set()
+
         if (restart or self.shutdown_event.is_set()) and self.main_loop:
             self.main_loop.quit()
         return GLib.SOURCE_CONTINUE
@@ -91,6 +98,12 @@ class GStreamerPipeline:
         cv.imshow("CAMERA", frame)
         cv.waitKey(1)
         return GLib.SOURCE_CONTINUE
+
+    def _remove_sources(self):
+        for source_id in self.source_ids:
+            if source_id:
+                GLib.source_remove(source_id)
+        self.source_ids.clear()
 
     def run(self):
         pipeline_str = (
@@ -108,20 +121,33 @@ class GStreamerPipeline:
         bus.add_signal_watch()
         bus.connect("message", self.on_message)
         self.main_loop = GLib.MainLoop()
-        
-        GLib.timeout_add(10, self.process_commands)
-        GLib.timeout_add(10, self.display_latest_frame)
-        
+
+        self.source_ids = [
+            GLib.timeout_add(10, self.process_commands),
+            GLib.timeout_add(10, self.display_latest_frame),
+        ]
+
         if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
             self.connected = False
             self.pool.put(("change_cam", False))
-            return
-        try:
-            self.main_loop.run()
-        finally:
+            self._remove_sources()
+            bus.remove_signal_watch()
             self.pipeline.set_state(Gst.State.NULL)
             self.pipeline = None
             self.main_loop = None
+            return
+
+        try:
+            self.main_loop.run()
+        finally:
+            self._remove_sources()
+            bus.remove_signal_watch()
+            self.pipeline.set_state(Gst.State.NULL)
+            cv.destroyWindow("CAMERA")
+            cv.waitKey(1)
+            self.pipeline = None
+            self.main_loop = None
+
 
 def gstreamer_main(connection, pool, shutdown_event):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -136,6 +162,7 @@ def gstreamer_main(connection, pool, shutdown_event):
             else:
                 shutdown_event.wait(0.05)
     finally:
+        pipeline._remove_sources()
         if pipeline.pipeline:
             pipeline.pipeline.set_state(Gst.State.NULL)
         cv.destroyAllWindows()
