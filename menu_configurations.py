@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import FreeSimpleGUI as sg
 
 from interface.filter_schema import (
@@ -5,6 +7,7 @@ from interface.filter_schema import (
     DYNAMIC_PROPERTY_OPTIONS,
     INVALID_STATE_OPTIONS,
     PDH_KEY,
+    RCS_KEY,
 )
 
 
@@ -13,14 +16,19 @@ class Configurations:
     OUTPUT = ["NONE", "OBJECT", "CLUSTERS"]
     RCS = ["STANDARD", "HIGH SENSITIVITY"]
     FONT = ("Helvetica", 12)
+    RADAR_LETTERS = {1: "A", 2: "B", 3: "C"}
 
     def __init__(self):
         sg.set_options(font=self.FONT)
         sg.theme("SystemDefaultForReal")
+        self.connected_radar = False
+        self.connected_cam = False
+        self.recording = False
+        self.recording_counts = {}
         self.create_radar_division()
         self.create_options()
-        self.create_filter_list()
-        self.layout = [[self.FRAME], [sg.Push(), self.options, sg.Push()], [self.filter]]
+        self.create_radar_control()
+        self.layout = [[self.FRAME], [sg.Push(), self.options, sg.Push()], [self.radar_control]]
         self.window = sg.Window("Configurations Menu", self.layout, finalize=True)
         for element in self.window.element_list():
             if isinstance(element, sg.Combo):
@@ -29,8 +37,6 @@ class Configurations:
                 widget.tk.call(f"{popdown}.f.l", "configure", "-font", ("Helvetica", 11))
                 widget.tk.call(f"{popdown}.f.l", "configure", "-justify", "center")
         self.centralize_combos()
-        self.connected_radar = False
-        self.connected_cam = False
 
     def create_radar_division(self):
         gps = sg.Frame(
@@ -40,7 +46,7 @@ class Configurations:
                 sg.Button("OPEN GPS", key="conn_gps", button_color=("white", "green")),
                 sg.Button("MAPS", key="gps_maps"),
             ]],
-            title_location=sg.TITLE_LOCATION_RIGHT,
+            title_location=sg.TITLE_LOCATION_TOP,
         )
         warning = [sg.Push(), sg.Text("CLUSTER + QUALITY FOR GRAPHS"), sg.Push(), gps, sg.Push()]
         columns = []
@@ -59,32 +65,86 @@ class Configurations:
             columns.extend([sg.Push(), column, sg.Push()])
             if channel != 3:
                 columns.append(sg.VSep())
-        self.FRAME = [sg.Frame("Real Time Configurations", [columns, warning], expand_x=True)]
+        self.FRAME = [sg.Frame(
+            "Real Time Configurations",
+            [columns, warning],
+            expand_x=True,
+            title_location=sg.TITLE_LOCATION_TOP,
+        )]
 
     def create_options(self):
-        choices = sg.Frame("Radar", [[
-            sg.Radio("1", "choose", key="send_1"),
-            sg.Radio("2", "choose", key="send_2"),
-            sg.Radio("3", "choose", key="send_3"),
-            sg.Radio("all", "choose", key="send_all", default=True),
-        ]])
+        choices = sg.Frame(
+            "Radar",
+            [[
+                sg.Radio("1", "choose", key="send_1"),
+                sg.Radio("2", "choose", key="send_2"),
+                sg.Radio("3", "choose", key="send_3"),
+                sg.Radio("all", "choose", key="send_all", default=True),
+            ]],
+            title_location=sg.TITLE_LOCATION_TOP,
+        )
         column1 = sg.Column([
-            [sg.Checkbox("Radar Power", key="CHECK_RPW", default=True), sg.Push(), sg.Combo(self.POWER, self.POWER[3], key="RPW", readonly=True)],
-            [sg.Checkbox("RCS Threshold", key="CHECK_RCS", default=True), sg.Combo(self.RCS, self.RCS[1], key="RCS", readonly=True)],
-        ])
-        column2 = sg.Column([
-            [sg.Checkbox("Output Type", key="CHECK_OUT", default=True), sg.Combo(self.OUTPUT, self.OUTPUT[2], key="OUT", readonly=True, size=(15, 1),)],
-            [sg.Push(), sg.Checkbox("Send Quality", key="CHECK_QUALITY", default=True), sg.Push()],
-        ])
-        self.options = sg.Frame("Options", [
-            [sg.Checkbox("Max Distance", key="CHECK_DISTANCE", default=True), sg.Text("196", key="SLIDER_VAL"),
-             sg.Slider((196, 260), 196, orientation="h", resolution=1, key="DISTANCE", disable_number_display=True, enable_events=True, expand_x=True)],
-            [column1, sg.VSep(), column2],
-            [sg.Button("Send"), choices, sg.VSep(),
-             sg.Button("OPEN RADAR", key="conn_radar", button_color=("white", "green")),
-             sg.Button("OPEN CAM", key="conn_cam", button_color=("white", "green"))],
-            [sg.Button("SAVE in Non Volatile Memory", key="save_nvm", expand_x=True, button_color=("black", "white"))],
+            [
+                sg.Checkbox("Radar Power", key="CHECK_RPW", default=True),
+                sg.Push(),
+                sg.Combo(self.POWER, self.POWER[3], key="RPW", readonly=True),
+            ],
+            [
+                sg.Checkbox("RCS Threshold", key="CHECK_RCS", default=True),
+                sg.Push(),
+                sg.Combo(self.RCS, self.RCS[1], key="RCS", readonly=True),
+            ],
+            [sg.Button("Send", expand_x=True), choices],
+            [
+                sg.Button(
+                    "SAVE in Non Volatile Memory",
+                    key="save_nvm",
+                    expand_x=True,
+                    button_color=("black", "white"),
+                )
+            ],
         ], expand_x=True)
+        column2 = sg.Column([
+            [
+                sg.Checkbox("Output Type", key="CHECK_OUT", default=True),
+                sg.Push(),
+                sg.Combo(self.OUTPUT, self.OUTPUT[2], key="OUT", readonly=True, size=(15, 1)),
+            ],
+            [sg.Push(), sg.Checkbox("Send Quality", key="CHECK_QUALITY", default=True), sg.Push()],
+            [
+                sg.Button(
+                    "OPEN RADAR",
+                    key="conn_radar",
+                    expand_x=True,
+                    button_color=("white", "green"),
+                )
+            ],
+            [
+                sg.Button(
+                    "OPEN CAM",
+                    key="conn_cam",
+                    expand_x=True,
+                    button_color=("white", "green"),
+                )
+            ],
+        ], expand_x=True)
+        self.options = sg.Frame("Options", [
+            [
+                sg.Checkbox("Max Distance", key="CHECK_DISTANCE", default=True),
+                sg.Text("196", key="SLIDER_VAL"),
+                sg.Slider(
+                    (196, 260),
+                    196,
+                    orientation="h",
+                    resolution=1,
+                    key="DISTANCE",
+                    disable_number_display=True,
+                    enable_events=True,
+                    expand_x=True,
+                ),
+            ],
+            [column1, sg.VSep(), column2],
+        ], expand_x=True, title_location=sg.TITLE_LOCATION_TOP)
 
     @staticmethod
     def _option_control(option, include_color=False):
@@ -94,7 +154,7 @@ class Configurations:
             controls.append(sg.Button("", button_color=option.color, disabled=True))
         return controls
 
-    def create_filter_list(self):
+    def _create_filter_layout(self):
         dynamic_rows = []
         for start in (0, 4):
             row = [sg.Push()]
@@ -105,30 +165,78 @@ class Configurations:
         dynamic = sg.Column(dynamic_rows, justification="center")
 
         pdh = sg.Column([
-            [sg.Text("PDH0 - False Alarm Probability (zero is invalid)", justification="center")],
+            [sg.Text("PDH0 - False Alarm Probability (zero is invalid)", expand_x=True, justification="center")],
             [sg.Slider((1, 7), default_value=3, orientation="h", tick_interval=1,
                        disable_number_display=True, expand_x=True, enable_events=True, key=PDH_KEY)],
         ])
-
+        rcs = sg.Column([
+            [sg.Text("Minimum RCS (dBm²)", expand_x=True, justification="center")],
+            [sg.Slider((-64.0, 63.5), default_value=-64.0, orientation="h", resolution=0.5,
+                       expand_x=True, enable_events=True, key=RCS_KEY, disable_number_display=True)],
+            [ sg.Push(), sg.Text("-64.0", key="RCS_FILTER_VALUE"), sg.Push(),
+]
+        ], expand_x=True)
+        
         ambiguity = sg.Column([
-            [sg.Text("Ambiguity State", justification="center")],
-            [*sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[:2]), [])],
-            [*sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[2:]), [])],
-        ], justification="center")
+            [sg.Text("Ambiguity State", justification="center", expand_x=True)],
+            [sg.Push(), *sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[:2]), []), sg.Push()],
+            [sg.Push(), *sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[2:]), []), sg.Push()],        
+            ], justification="center")
 
         invalid_rows = []
-        for start in (0, 9):
+        for start in range(0, len(INVALID_STATE_OPTIONS), 6):
             row = [sg.Push()]
-            for option in INVALID_STATE_OPTIONS[start:start + 9]:
+            for option in INVALID_STATE_OPTIONS[start:start + 6]:
                 row.extend(self._option_control(option))
             row.append(sg.Push())
             invalid_rows.append(row)
-        invalid = sg.Column([[sg.Text("Cluster Invalid State", expand_x=True, justification="center")], *invalid_rows], expand_x=True)
+        
+        invalid = sg.Column(
+            [[sg.Text("Cluster Invalid State", expand_x=True, justification="center")], *invalid_rows],
+            expand_x=True,
+        )
+        return [
+            [dynamic],
+            [sg.HorizontalSeparator()],
+            [pdh, sg.VSep(), rcs],
+            [sg.HorizontalSeparator()],
+            [ambiguity, sg.VSep(), invalid],
+        ]
 
-        self.filter = sg.Frame("Filters for points", [
-            [dynamic], [sg.HorizontalSeparator()], [pdh, sg.VSep(), ambiguity],
-            [sg.HorizontalSeparator()], [invalid],
-        ], expand_x=True)
+    @staticmethod
+    def _create_record_layout():
+        radar_choices = [sg.Push(), sg.Text("Record radars:")]
+        for channel, letter in ((1, "A"), (2, "B"), (3, "C")):
+            radar_choices.append(sg.Checkbox(letter, key=f"record_radar_{channel}", default=True))
+        radar_choices.append(sg.Push())
+        return [
+            [
+                sg.Text("Destination folder"),
+                sg.Input(default_text=str(Path.cwd()), key="record_folder", expand_x=True),
+                sg.FolderBrowse("SELECT", key="record_browse", target="record_folder"),
+            ],
+            radar_choices,
+            [sg.Button(
+                "START RECORDING",
+                key="record_toggle",
+                expand_x=True,
+                button_color=("white", "green"),
+                disabled=True,
+            )],
+            [sg.Text("IDLE", key="record_status", expand_x=True, justification="center")],
+        ]
+
+    def create_radar_control(self):
+        tabs = [[
+            sg.Tab("Filters", self._create_filter_layout()),
+            sg.Tab("Record", self._create_record_layout()),
+        ]]
+        self.radar_control = sg.Frame(
+            "Radar Control",
+            [[sg.TabGroup(tabs, expand_x=True)]],
+            expand_x=True,
+            title_location=sg.TITLE_LOCATION_TOP,
+        )
 
     def centralize_combos(self):
         for key in ("RPW", "OUT", "RCS"):
@@ -143,6 +251,8 @@ class Configurations:
             "CLOSE RADAR" if connection else "OPEN RADAR",
             button_color=("white", "red" if connection else "green"),
         )
+        if not self.recording:
+            self.window["record_toggle"].update(disabled=not connection)
         for channel in range(1, 4):
             self.change_radar({f"{key}_{channel}": "XXX" for key in ("DISTANCE", "RPW", "OUT", "RCS", "EXT")})
 
@@ -158,6 +268,47 @@ class Configurations:
             "CLOSE GPS" if connection else "OPEN GPS",
             button_color=("white", "red" if connection else "green"),
         )
+
+    def set_recording_pending(self, starting):
+        self.window["record_toggle"].update(
+            "STARTING..." if starting else "STOPPING...",
+            disabled=True,
+        )
+
+    def change_recording(self, payload):
+        self.recording = bool(payload.get("active"))
+        self.recording_counts = dict(payload.get("counts", {}))
+        controls_disabled = self.recording
+        for key in ("record_folder", "record_browse", "record_radar_1", "record_radar_2", "record_radar_3"):
+            self.window[key].update(disabled=controls_disabled)
+        self.window["record_toggle"].update(
+            "STOP RECORDING" if self.recording else "START RECORDING",
+            button_color=("white", "red" if self.recording else "green"),
+            disabled=not self.recording and not self.connected_radar,
+        )
+        if self.recording:
+            letters = ", ".join(self.RADAR_LETTERS[channel] for channel in sorted(payload.get("folders", {})))
+            self.window["record_status"].update(f"RECORDING: {letters}")
+        else:
+            self._update_recording_count_text("SAVED" if self.recording_counts else "IDLE")
+
+    def change_recording_progress(self, payload):
+        self.recording_counts[payload["channel"]] = payload["count"]
+        self._update_recording_count_text("RECORDING")
+
+    def show_recording_error(self, message):
+        self.change_recording({"active": False, "counts": {}})
+        sg.popup_error(message, title="Recording error")
+
+    def _update_recording_count_text(self, prefix):
+        if not self.recording_counts:
+            self.window["record_status"].update(prefix)
+            return
+        counts = " | ".join(
+            f"{self.RADAR_LETTERS[channel]}: {count}"
+            for channel, count in sorted(self.recording_counts.items())
+        )
+        self.window["record_status"].update(f"{prefix} — {counts}")
 
     def change_radar(self, values):
         for key, value in values.items():

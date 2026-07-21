@@ -1,5 +1,5 @@
-from connection.connection_packages import Clusters_messages
-from interface.filter_schema import DYNAMIC_COLORS_BGR, PDH_KEY, parse_filter_key
+from connection.connection_packages import Clusters_messages, Objects_messages
+from interface.filter_schema import DYNAMIC_COLORS_BGR, PDH_KEY, RCS_KEY, parse_filter_key
 
 
 class Filter_graph:
@@ -10,6 +10,7 @@ class Filter_graph:
             "invalid_state": set(),
         }
         self.pdh_max = int(values.get(PDH_KEY, 3))
+        self.rcs_min = float(values.get(RCS_KEY, -64.0))
         self._load(values)
 
     def _load(self, values: dict) -> None:
@@ -20,6 +21,8 @@ class Filter_graph:
             field, value = parsed
             if field == "pdh":
                 self.pdh_max = int(enabled)
+            elif field == "rcs":
+                self.rcs_min = float(enabled)
             elif field in self.enabled_values and isinstance(value, int) and enabled:
                 self.enabled_values[field].add(value)
 
@@ -31,6 +34,9 @@ class Filter_graph:
         if field == "pdh":
             self.pdh_max = int(values[event])
             return
+        if field == "rcs":
+            self.rcs_min = float(values[event])
+            return
         if field not in self.enabled_values or not isinstance(value, int):
             return
         selected = self.enabled_values[field]
@@ -39,23 +45,38 @@ class Filter_graph:
         else:
             selected.discard(value)
 
-    def allowed(self, dyn: int, pdh: int, ambg: int, inv: int) -> bool:
+    def allowed(self, dyn: int, pdh: int, ambg: int, inv: int, rcs: float) -> bool:
         return (
             dyn in self.enabled_values["dynamic_property"]
             and 0 < pdh <= self.pdh_max
             and ambg in self.enabled_values["ambiguity_state"]
             and inv in self.enabled_values["invalid_state"]
+            and rcs >= self.rcs_min
         )
 
     def filter_points(self, messages: Clusters_messages):
         all_x, all_y, colors = [], [], []
-        ids = messages.x.keys() & messages.y.keys() & messages.dyn.keys()
-        ids &= messages.pdh.keys() & messages.ambg.keys() & messages.inv.keys()
-        for cluster_id in ids:
-            dyn = messages.dyn[cluster_id]
-            if not self.allowed(dyn, messages.pdh[cluster_id], messages.ambg[cluster_id], messages.inv[cluster_id]):
+        for point in messages.snapshot():
+            if not self.allowed(
+                point.dynamic_property,
+                point.pdh,
+                point.ambiguity_state,
+                point.invalid_flag,
+                point.rcs,
+            ):
                 continue
-            all_x.append(messages.x[cluster_id])
-            all_y.append(messages.y[cluster_id])
-            colors.append(DYNAMIC_COLORS_BGR[dyn])
+            all_x.append(point.dist_latitude)
+            all_y.append(point.dist_long)
+            colors.append(DYNAMIC_COLORS_BGR[point.dynamic_property])
+        return all_x, all_y, colors
+
+    def filter_objects(self, messages: Objects_messages):
+        all_x, all_y, colors = [], [], []
+        enabled_dynamic = self.enabled_values["dynamic_property"]
+        for obj in messages.snapshot():
+            if obj.dynamic_property not in enabled_dynamic or obj.rcs < self.rcs_min:
+                continue
+            all_x.append(obj.dist_latitude)
+            all_y.append(obj.dist_long)
+            colors.append(DYNAMIC_COLORS_BGR[obj.dynamic_property])
         return all_x, all_y, colors

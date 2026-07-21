@@ -1,6 +1,7 @@
+from pathlib import Path
 import re
 import signal
-from multiprocessing import Event, Pipe, Process, Queue
+from multiprocessing import get_context
 from queue import Empty
 
 import FreeSimpleGUI as sg
@@ -8,6 +9,7 @@ import FreeSimpleGUI as sg
 from camera.camera_gstreamer import gstreamer_main
 from connection.connection_main import create_connection_communication
 from gps.gps_connection import main as gps_main
+from interface.filter_schema import RCS_KEY
 from menu_configurations import Configurations
 
 
@@ -26,12 +28,31 @@ def check_popup():
     finally:
         window.close()
 
+
 def _join_processes(processes, timeout=3.0):
     # Really overkill?
     for process in processes: process.join(timeout)
-    for process in processes: 
+    for process in processes:
         if process.is_alive(): process.terminate()
     for process in processes: process.join()
+
+
+def _start_recording(values, config, send_radar):
+    folder = Path(values.get("record_folder", "")).expanduser()
+    channels = [
+        channel
+        for channel in range(1, 4)
+        if values.get(f"record_radar_{channel}")
+    ]
+    if not folder.is_dir():
+        sg.popup_error("Select an existing destination folder", title="Recording error")
+        return
+    if not channels:
+        sg.popup_error("Select at least one radar to record", title="Recording error")
+        return
+    config.set_recording_pending(True)
+    send_radar.send(("record_start", {"folder": str(folder.resolve()), "channels": channels}))
+
 
 def _handle_gui_event(event, values, config, send_radar, send_cam, send_gps, shutdown_event):
     if event == sg.WINDOW_CLOSED: shutdown_event.set(); return
@@ -44,7 +65,15 @@ def _handle_gui_event(event, values, config, send_radar, send_cam, send_gps, shu
             if config.connected_radar and check_popup():
                 config.window["save_nvm"].update(button_color=("white", "green"))
                 send_radar.send((event, values))
+        case "record_toggle":
+            if config.recording:
+                config.set_recording_pending(False)
+                send_radar.send(("record_stop", None))
+            else:
+                _start_recording(values, config, send_radar)
         case key if isinstance(key, str) and key.startswith("filter"):
+            if event == RCS_KEY:
+                config.window["RCS_FILTER_VALUE"].update(f"{values[RCS_KEY]:.1f}")
             send_radar.send((event, values))
         case key if isinstance(key, str) and re.match(r"^choose_", key):
             choice = int(event.rsplit("_", 1)[1])
@@ -60,13 +89,18 @@ def _handle_gui_event(event, values, config, send_radar, send_cam, send_gps, shu
         case "gps_maps": send_gps.send((event, None))
         case "DISTANCE": config.window["SLIDER_VAL"].update(int(values["DISTANCE"]))
 
+
 def _apply_status_message(message, payload, config):
     match message:
-        case "message_201":     config.change_radar(payload)
-        case "change_radar":    config.change_connection_radar(payload)
-        case "change_cam":      config.change_connection_cam(payload)
-        case "gps_text":        config.window[message].update(payload)
-        case "conn_gps":        config.change_connection_gps(payload)
+        case "message_201":       config.change_radar(payload)
+        case "change_radar":      config.change_connection_radar(payload)
+        case "change_cam":        config.change_connection_cam(payload)
+        case "gps_text":          config.window[message].update(payload)
+        case "conn_gps":          config.change_connection_gps(payload)
+        case "recording_state":   config.change_recording(payload)
+        case "recording_progress": config.change_recording_progress(payload)
+        case "recording_error":   config.show_recording_error(payload)
+
 
 def _drain_status_queue(all_queue, config):
     while True:
@@ -74,11 +108,13 @@ def _drain_status_queue(all_queue, config):
         except Empty: return
         _apply_status_message(message, payload, config)
 
+
 def _run_event_loop(config, all_queue, send_radar, send_cam, send_gps, shutdown_event):
     while not shutdown_event.is_set():
         event, values = config.read()
-        _handle_gui_event( event, values, config, send_radar, send_cam, send_gps, shutdown_event,)
+        _handle_gui_event(event, values, config, send_radar, send_cam, send_gps, shutdown_event)
         _drain_status_queue(all_queue, config)
+
 
 def _shutdown(processes, pipes, config, shutdown_event):
     shutdown_event.set()
@@ -91,8 +127,10 @@ def _shutdown(processes, pipes, config, shutdown_event):
     _join_processes(processes)
     config.window.close()
 
+
 def main():
-    shutdown_event = Event()
+    process_context = get_context("spawn")
+    shutdown_event = process_context.Event()
 
     def signal_handler(_sig, _frame):
         shutdown_event.set()
@@ -101,27 +139,28 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     sg.set_options(font=("Helvetica", 12))
-    all_queue = Queue(5)
+    all_queue = process_context.Queue(32)
 
-    receive_radar, send_radar = Pipe()
-    receive_cam, send_cam = Pipe()
-    receive_gps, send_gps = Pipe()
+    receive_radar, send_radar = process_context.Pipe()
+    receive_cam, send_cam = process_context.Pipe()
+    receive_gps, send_gps = process_context.Pipe()
 
     config = Configurations()
     _, values = config.read()
 
     processes = [
-        Process(target=create_connection_communication, args=(values, receive_radar, all_queue, shutdown_event)),
-        Process(target=gstreamer_main, args=(receive_cam, all_queue, shutdown_event)),
-        Process(target=gps_main, args=(receive_gps, all_queue, shutdown_event)),
+        process_context.Process(target=create_connection_communication, args=(values, receive_radar, all_queue, shutdown_event)),
+        process_context.Process(target=gstreamer_main, args=(receive_cam, all_queue, shutdown_event)),
+        process_context.Process(target=gps_main, args=(receive_gps, all_queue, shutdown_event)),
     ]
     for process in processes:
         process.start()
 
     try:
-        _run_event_loop( config, all_queue, send_radar, send_cam, send_gps, shutdown_event,)
+        _run_event_loop(config, all_queue, send_radar, send_cam, send_gps, shutdown_event)
     finally:
-        _shutdown(processes, (send_radar, send_cam, send_gps), config, shutdown_event,)
+        _shutdown(processes, (send_radar, send_cam, send_gps), config, shutdown_event)
+
 
 if __name__ == "__main__":
     main()

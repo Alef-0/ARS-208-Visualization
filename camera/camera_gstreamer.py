@@ -1,6 +1,7 @@
 import queue
 import signal
 import socket
+import time
 
 import cv2 as cv
 import gi
@@ -10,6 +11,14 @@ gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst
 
 Gst.init(None)
+
+MAX_PIPELINE_ATTEMPTS = 3
+FIRST_FRAME_TIMEOUT_SECONDS = 5.0
+PIPELINE_RETRY_DELAY_SECONDS = 0.5
+_RESULT_FAILURE = "failure"
+_RESULT_RESTART = "restart"
+_RESULT_CLOSED = "closed"
+
 
 class GStreamerPipeline:
     def __init__(self, conn, pool, shutdown_event):
@@ -21,6 +30,11 @@ class GStreamerPipeline:
         self.pool = pool
         self.shutdown_event = shutdown_event
         self.connected = False
+        self.source_ids = []
+        self.first_frame_received = False
+        self.attempt_started = 0.0
+        self.exit_reason = _RESULT_FAILURE
+        self.channel_changed = False
 
     @staticmethod
     def create_url(channel):
@@ -39,6 +53,7 @@ class GStreamerPipeline:
             width = caps.get_value("width")
             height = caps.get_value("height")
             frame = np.frombuffer(map_info.data, dtype=np.uint8).reshape(height, width, 3).copy()
+            self.first_frame_received = True
             try:
                 self.frames.put_nowait(frame)
             except queue.Full:
@@ -53,6 +68,7 @@ class GStreamerPipeline:
 
     def on_message(self, _bus, message):
         if message.type in (Gst.MessageType.EOS, Gst.MessageType.ERROR):
+            self.exit_reason = _RESULT_FAILURE
             if message.type == Gst.MessageType.ERROR:
                 error, debug = message.parse_error()
                 print(f"GStreamer error: {error}; {debug}")
@@ -61,24 +77,39 @@ class GStreamerPipeline:
 
     def process_commands(self):
         restart = False
-        while self.communicate.poll():
-            event, value = self.communicate.recv()
-            if event == "STOP": self.shutdown_event.set()
-            elif event == "choose" and value != self.channel:
-                self.channel = value
-                restart = True
-            elif event == "conn_cam":
-                if self.connected:
+        try:
+            while self.communicate.poll():
+                event, value = self.communicate.recv()
+                if event == "STOP":
+                    self.shutdown_event.set()
                     self.connected = False
-                    self.pool.put(("change_cam", False))
+                    self.exit_reason = _RESULT_CLOSED
                     restart = True
-                else:
-                    try:
-                        with socket.create_connection(("192.168.1.108", 554), timeout=2):
-                            self.connected = True
-                            self.pool.put(("change_cam", True))
-                    except OSError:
+                elif event == "choose" and value != self.channel:
+                    self.channel = value
+                    self.channel_changed = True
+                    if self.connected:
+                        self.exit_reason = _RESULT_RESTART
+                        restart = True
+                elif event == "conn_cam":
+                    if self.connected:
+                        self.connected = False
+                        self.exit_reason = _RESULT_CLOSED
                         self.pool.put(("change_cam", False))
+                        restart = True
+                    else:
+                        try:
+                            with socket.create_connection(("192.168.1.108", 554), timeout=2):
+                                self.connected = True
+                                self.pool.put(("change_cam", True))
+                        except OSError:
+                            self.pool.put(("change_cam", False))
+        except (EOFError, OSError):
+            self.shutdown_event.set()
+            self.connected = False
+            self.exit_reason = _RESULT_CLOSED
+            restart = True
+
         if (restart or self.shutdown_event.is_set()) and self.main_loop:
             self.main_loop.quit()
         return GLib.SOURCE_CONTINUE
@@ -92,6 +123,41 @@ class GStreamerPipeline:
         cv.waitKey(1)
         return GLib.SOURCE_CONTINUE
 
+    def check_first_frame(self):
+        if self.first_frame_received:
+            return GLib.SOURCE_CONTINUE
+        if time.monotonic() - self.attempt_started < FIRST_FRAME_TIMEOUT_SECONDS:
+            return GLib.SOURCE_CONTINUE
+        print(
+            f"Camera channel {self.channel} did not produce a frame within "
+            f"{FIRST_FRAME_TIMEOUT_SECONDS:.1f} seconds"
+        )
+        self.exit_reason = _RESULT_FAILURE
+        if self.main_loop:
+            self.main_loop.quit()
+        return GLib.SOURCE_CONTINUE
+
+    def _clear_frames(self):
+        while True:
+            try:
+                self.frames.get_nowait()
+            except queue.Empty:
+                return
+
+    def _remove_sources(self):
+        for source_id in self.source_ids:
+            if source_id:
+                GLib.source_remove(source_id)
+        self.source_ids.clear()
+
+    @staticmethod
+    def _destroy_window():
+        try:
+            cv.destroyWindow("CAMERA")
+            cv.waitKey(1)
+        except cv.error:
+            pass
+
     def run(self):
         pipeline_str = (
             "rtspsrc name=source latency=100 protocols=tcp ! "
@@ -99,43 +165,89 @@ class GStreamerPipeline:
             "video/x-raw,format=BGR,width=800,height=600 ! "
             "appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true"
         )
-        self.pipeline = Gst.parse_launch(pipeline_str)
-        source = self.pipeline.get_by_name("source")
-        sink = self.pipeline.get_by_name("sink")
-        source.set_property("location", self.create_url(self.channel))
-        sink.connect("new-sample", self.on_new_sample)
-        bus = self.pipeline.get_bus()
-        bus.add_signal_watch()
-        bus.connect("message", self.on_message)
-        self.main_loop = GLib.MainLoop()
-        
-        GLib.timeout_add(10, self.process_commands)
-        GLib.timeout_add(10, self.display_latest_frame)
-        
-        if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
-            self.connected = False
-            self.pool.put(("change_cam", False))
-            return
+        bus = None
+        self._clear_frames()
+        self.first_frame_received = False
+        self.attempt_started = time.monotonic()
+        self.exit_reason = _RESULT_FAILURE
+
         try:
+            self.pipeline = Gst.parse_launch(pipeline_str)
+            source = self.pipeline.get_by_name("source")
+            sink = self.pipeline.get_by_name("sink")
+            source.set_property("location", self.create_url(self.channel))
+            sink.connect("new-sample", self.on_new_sample)
+            bus = self.pipeline.get_bus()
+            bus.add_signal_watch()
+            bus.connect("message", self.on_message)
+            self.main_loop = GLib.MainLoop()
+
+            self.source_ids = [
+                GLib.timeout_add(10, self.process_commands),
+                GLib.timeout_add(10, self.display_latest_frame),
+                GLib.timeout_add(100, self.check_first_frame),
+            ]
+
+            if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+                print(f"GStreamer could not start camera channel {self.channel}")
+                return self.exit_reason, self.first_frame_received
+
             self.main_loop.run()
+            return self.exit_reason, self.first_frame_received
+        except Exception as error:
+            print(f"Camera pipeline failure: {error}")
+            return _RESULT_FAILURE, self.first_frame_received
         finally:
-            self.pipeline.set_state(Gst.State.NULL)
+            self._remove_sources()
+            if bus is not None:
+                bus.remove_signal_watch()
+            if self.pipeline is not None:
+                self.pipeline.set_state(Gst.State.NULL)
+            self._destroy_window()
             self.pipeline = None
             self.main_loop = None
+
 
 def gstreamer_main(connection, pool, shutdown_event):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTERM, lambda *_: shutdown_event.set())
     pipeline = GStreamerPipeline(connection, pool, shutdown_event)
+    failed_attempts = 0
 
     try:
         while not shutdown_event.is_set():
             pipeline.process_commands()
-            if pipeline.connected:
-                pipeline.run()
-            else:
+            if pipeline.channel_changed:
+                failed_attempts = 0
+                pipeline.channel_changed = False
+            if not pipeline.connected:
+                failed_attempts = 0
                 shutdown_event.wait(0.05)
+                continue
+
+            result, received_frame = pipeline.run()
+            if result in (_RESULT_RESTART, _RESULT_CLOSED):
+                failed_attempts = 0
+                continue
+            if shutdown_event.is_set() or not pipeline.connected:
+                continue
+
+            if received_frame:
+                failed_attempts = 0
+            failed_attempts += 1
+            if failed_attempts >= MAX_PIPELINE_ATTEMPTS:
+                print(
+                    f"Camera channel {pipeline.channel} failed after "
+                    f"{MAX_PIPELINE_ATTEMPTS} attempts"
+                )
+                pipeline.connected = False
+                pool.put(("change_cam", False))
+                failed_attempts = 0
+                continue
+
+            shutdown_event.wait(PIPELINE_RETRY_DELAY_SECONDS)
     finally:
+        pipeline._remove_sources()
         if pipeline.pipeline:
             pipeline.pipeline.set_state(Gst.State.NULL)
         cv.destroyAllWindows()

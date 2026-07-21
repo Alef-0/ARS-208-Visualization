@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 FILTER_PREFIX = "filter."
 PDH_KEY = "filter.pdh.max"
+RCS_KEY = "filter.rcs.min"
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,7 @@ def parse_filter_key(key: object) -> tuple[str, int | str] | None:
     if len(parts) != 3:
         return None
     field, raw_value = parts[1], parts[2]
-    if field == "pdh" and raw_value == "max":
+    if (field, raw_value) in (("pdh", "max"), ("rcs", "min")):
         return field, raw_value
     try:
         return field, int(raw_value, 0)
