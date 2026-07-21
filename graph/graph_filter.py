@@ -1,4 +1,4 @@
-from connection.connection_packages import Clusters_messages
+from connection.connection_packages import Clusters_messages, Objects_messages
 from interface.filter_schema import DYNAMIC_COLORS_BGR, PDH_KEY, parse_filter_key
 
 
@@ -60,4 +60,15 @@ class Filter_graph:
             all_x.append(point.dist_latitude)
             all_y.append(point.dist_long)
             colors.append(DYNAMIC_COLORS_BGR[point.dynamic_property])
+        return all_x, all_y, colors
+
+    def filter_objects(self, messages: Objects_messages):
+        all_x, all_y, colors = [], [], []
+        enabled_dynamic = self.enabled_values["dynamic_property"]
+        for obj in messages.snapshot():
+            if obj.dynamic_property not in enabled_dynamic:
+                continue
+            all_x.append(obj.dist_latitude)
+            all_y.append(obj.dist_long)
+            colors.append(DYNAMIC_COLORS_BGR[obj.dynamic_property])
         return all_x, all_y, colors
