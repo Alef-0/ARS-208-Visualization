@@ -1,3 +1,4 @@
+from datetime import datetime
 import queue
 import signal
 
@@ -162,11 +163,16 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
 
                 channel_messages = messages[channel]
                 if message.canId == 0x600:
+                    recorded_at = datetime.now().astimezone()
                     if channel == radar_choice:
                         x, y, colors = filters.filter_points(channel_messages)
                         graph.show_points(x, y, colors)
                     if recording_ready.get(channel, False):
-                        recording.submit(channel, channel_messages.snapshot())
+                        recording.submit(
+                            channel,
+                            channel_messages.snapshot(),
+                            recorded_at,
+                        )
                     channel_messages.clear()
                     if channel in recording.channels:
                         recording_ready[channel] = True
