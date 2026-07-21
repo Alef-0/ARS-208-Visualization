@@ -34,6 +34,7 @@ class GStreamerPipeline:
         self.first_frame_received = False
         self.attempt_started = 0.0
         self.exit_reason = _RESULT_FAILURE
+        self.channel_changed = False
 
     @staticmethod
     def create_url(channel):
@@ -86,6 +87,7 @@ class GStreamerPipeline:
                     restart = True
                 elif event == "choose" and value != self.channel:
                     self.channel = value
+                    self.channel_changed = True
                     if self.connected:
                         self.exit_reason = _RESULT_RESTART
                         restart = True
@@ -215,6 +217,9 @@ def gstreamer_main(connection, pool, shutdown_event):
     try:
         while not shutdown_event.is_set():
             pipeline.process_commands()
+            if pipeline.channel_changed:
+                failed_attempts = 0
+                pipeline.channel_changed = False
             if not pipeline.connected:
                 failed_attempts = 0
                 shutdown_event.wait(0.05)
