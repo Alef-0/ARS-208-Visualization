@@ -1,12 +1,13 @@
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
 import numpy as np
 
-from connection.connection_packages import MISSING_QUALITY, RadarPoint
+from connection.connection_packages import MISSING_QUALITY, RadarObject, RadarPoint
 import recording.point_cloud_recorder as recorder_module
 
 
@@ -53,6 +54,27 @@ class PointCloudRecorderTests(unittest.TestCase):
             invalid_flag=7,
         )
 
+    @staticmethod
+    def radar_object(object_id=8):
+        return RadarObject(
+            object_id=object_id,
+            dist_long=40.0,
+            dist_latitude=-2.0,
+            velocity_longitude=3.5,
+            velocity_latitude=0.25,
+            dynamic_property=1,
+            rcs=-6.0,
+            dist_long_rms=0.014,
+            velocity_longitude_rms=0.063,
+            dist_latitude_rms=0.105,
+            velocity_latitude_rms=0.288,
+            acceleration_latitude_rms=None,
+            acceleration_longitude_rms=2.187,
+            orientation_rms=180.0,
+            measurement_state=2,
+            probability_of_existence=7,
+        )
+
     def test_session_creates_one_timestamped_folder_per_radar(self):
         with TemporaryDirectory() as folder:
             session = recorder_module.RadarRecordingSession()
@@ -85,12 +107,55 @@ class PointCloudRecorderTests(unittest.TestCase):
             {"frame_000001.pcd": recorded_at.isoformat(timespec="microseconds")},
         )
         cloud, = FakePointCloud.calls
-        self.assertEqual(cloud.fields, recorder_module.PCD_FIELDS)
+        self.assertEqual(cloud.fields, recorder_module.CLUSTER_PCD_FIELDS)
         self.assertTrue(all(np.dtype(dtype).itemsize == 4 for dtype in cloud.types))
         self.assertEqual(tuple(cloud.values[0]), (
             3, 25.5, -1.25, 4.0, 0.0, 2, -8.5,
             MISSING_QUALITY, 4, 7,
         ))
+
+    def test_object_frame_uses_object_schema(self):
+        recorded_at = datetime(2026, 7, 21, 18, 31, tzinfo=timezone.utc)
+        with TemporaryDirectory() as folder:
+            session = recorder_module.RadarRecordingSession()
+            paths = session.start(folder, (1,))
+            self.assertTrue(
+                session.submit(
+                    1,
+                    (self.radar_object(),),
+                    recorded_at,
+                    frame_type="object",
+                )
+            )
+            counts = session.stop()
+            self.assertTrue((Path(paths[1]) / "frame_000001.pcd").is_file())
+
+        self.assertEqual(counts, {1: 1})
+        cloud, = FakePointCloud.calls
+        self.assertEqual(cloud.fields, recorder_module.OBJECT_PCD_FIELDS)
+        self.assertTrue(all(np.dtype(dtype).itemsize == 4 for dtype in cloud.types))
+        values = tuple(cloud.values[0])
+        self.assertEqual(values[:11], (
+            8, 40.0, -2.0, 3.5, 0.25, 1, -6.0,
+            0.014, 0.063, 0.105, 0.288,
+        ))
+        self.assertTrue(math.isnan(values[11]))
+        self.assertEqual(values[12:], (2.187, 180.0, 2, 7))
+
+    def test_object_frame_marks_missing_quality_values(self):
+        obj = self.radar_object()
+        obj.measurement_state = None
+        obj.probability_of_existence = None
+        with TemporaryDirectory() as folder:
+            session = recorder_module.RadarRecordingSession()
+            session.start(folder, (3,))
+            self.assertTrue(
+                session.submit(3, (obj,), datetime.now(timezone.utc), frame_type="object")
+            )
+            session.stop()
+
+        values = tuple(FakePointCloud.calls[0].values[0])
+        self.assertEqual(values[-2:], (MISSING_QUALITY, MISSING_QUALITY))
 
     def test_empty_radar_frame_is_stored(self):
         recorded_at = datetime.now(timezone.utc)
