@@ -112,8 +112,11 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
         previous_type = frame_types.get(channel)
         if previous_type is not None:
             previous_messages = frame_messages(channel, previous_type)
-            if previous_type == "cluster" and channel == radar_choice:
-                x, y, colors = filters.filter_points(previous_messages)
+            if channel == radar_choice:
+                if previous_type == "cluster":
+                    x, y, colors = filters.filter_points(previous_messages)
+                else:
+                    x, y, colors = filters.filter_objects(previous_messages)
                 graph.show_points(x, y, colors)
             if recording_ready.get(channel, False):
                 recording.submit(
