@@ -176,6 +176,14 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                             )
                         except Exception as error:
                             _put_status(pool, "recording_error", str(error), critical=True)
+                    elif event == "record_camera":
+                        captured_at = values.get("captured_at", "")
+                        for channel, filename in values.get("files", {}).items():
+                            recording.add_camera_snapshot(
+                                int(channel),
+                                filename,
+                                captured_at,
+                            )
                     elif event == "record_stop":
                         _stop_recording(recording, pool, recording_ready)
                     elif isinstance(event, str) and event.startswith("filter"):

@@ -67,6 +67,12 @@ class GraphFilterTests(unittest.TestCase):
         self.assertEqual(x, [-1.0])
         self.assertEqual(y, [4.0])
 
+    def test_default_rcs_is_minus_twenty(self):
+        values = initial_values()
+        values.pop(RCS_KEY)
+
+        self.assertEqual(Filter_graph(values).rcs_min, -20.0)
+
     def test_rcs_slider_update_changes_minimum(self):
         values = initial_values()
         graph_filter = Filter_graph(values)

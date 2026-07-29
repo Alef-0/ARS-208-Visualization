@@ -1,4 +1,11 @@
-from connection.connection_packages import Clusters_messages, Objects_messages
+from typing import Iterable
+
+from connection.connection_packages import (
+    Clusters_messages,
+    Objects_messages,
+    RadarObject,
+    RadarPoint,
+)
 from interface.filter_schema import DYNAMIC_COLORS_BGR, PDH_KEY, RCS_KEY, parse_filter_key
 
 
@@ -10,7 +17,7 @@ class Filter_graph:
             "invalid_state": set(),
         }
         self.pdh_max = int(values.get(PDH_KEY, 3))
-        self.rcs_min = float(values.get(RCS_KEY, -64.0))
+        self.rcs_min = float(values.get(RCS_KEY, -20.0))
         self._load(values)
 
     def _load(self, values: dict) -> None:
@@ -54,9 +61,9 @@ class Filter_graph:
             and rcs >= self.rcs_min
         )
 
-    def filter_points(self, messages: Clusters_messages):
+    def filter_point_sequence(self, points: Iterable[RadarPoint]):
         all_x, all_y, colors = [], [], []
-        for point in messages.snapshot():
+        for point in points:
             if not self.allowed(
                 point.dynamic_property,
                 point.pdh,
@@ -70,13 +77,19 @@ class Filter_graph:
             colors.append(DYNAMIC_COLORS_BGR[point.dynamic_property])
         return all_x, all_y, colors
 
-    def filter_objects(self, messages: Objects_messages):
+    def filter_object_sequence(self, objects: Iterable[RadarObject]):
         all_x, all_y, colors = [], [], []
         enabled_dynamic = self.enabled_values["dynamic_property"]
-        for obj in messages.snapshot():
+        for obj in objects:
             if obj.dynamic_property not in enabled_dynamic or obj.rcs < self.rcs_min:
                 continue
             all_x.append(obj.dist_latitude)
             all_y.append(obj.dist_long)
             colors.append(DYNAMIC_COLORS_BGR[obj.dynamic_property])
         return all_x, all_y, colors
+
+    def filter_points(self, messages: Clusters_messages):
+        return self.filter_point_sequence(messages.snapshot())
+
+    def filter_objects(self, messages: Objects_messages):
+        return self.filter_object_sequence(messages.snapshot())
