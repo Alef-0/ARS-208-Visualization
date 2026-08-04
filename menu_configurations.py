@@ -52,14 +52,30 @@ class Configurations:
             ]],
             title_location=sg.TITLE_LOCATION_TOP,
         )
+        received_messages = sg.Column(
+            [
+                [
+                    sg.Text(
+                        "MESSAGES: --",
+                        key="received_messages_1",
+                        expand_x=True,
+                        justification="center",
+                    )
+                ],
+                [
+                    sg.Text(
+                        "",
+                        key="received_messages_2",
+                        expand_x=True,
+                        justification="center",
+                    )
+                ],
+            ],
+            expand_x=True,
+        )
         message_status = [
             sg.Push(),
-            sg.Text(
-                "MESSAGES: --",
-                key="received_messages",
-                expand_x=True,
-                justification="center",
-            ),
+            received_messages,
             sg.Push(),
             gps,
             sg.Push(),
@@ -199,11 +215,18 @@ class Configurations:
             [sg.Push(), sg.Text("-20.0", key="RCS_FILTER_VALUE"), sg.Push()]
         ], expand_x=True)
 
+        return [
+            [dynamic],
+            [sg.HorizontalSeparator()],
+            [pdh, sg.VSep(), rcs],
+        ]
+
+    def _create_cluster_filter_layout(self):
         ambiguity = sg.Column([
             [sg.Text("Ambiguity State", justification="center", expand_x=True)],
             [sg.Push(), *sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[:2]), []), sg.Push()],
             [sg.Push(), *sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[2:]), []), sg.Push()],
-            ], justification="center")
+        ], justification="center", expand_x=True)
 
         invalid_rows = []
         for start in range(0, len(INVALID_STATE_OPTIONS), 6):
@@ -218,11 +241,9 @@ class Configurations:
             expand_x=True,
         )
         return [
-            [dynamic],
+            [ambiguity],
             [sg.HorizontalSeparator()],
-            [pdh, sg.VSep(), rcs],
-            [sg.HorizontalSeparator()],
-            [ambiguity, sg.VSep(), invalid],
+            [invalid],
         ]
 
     @staticmethod
@@ -264,6 +285,7 @@ class Configurations:
     def create_radar_control(self):
         tabs = [[
             sg.Tab("Filters", self._create_filter_layout()),
+            sg.Tab("Cluster Filtering", self._create_cluster_filter_layout()),
             sg.Tab("Record", self._create_record_layout()),
         ]]
         self.radar_control = sg.Frame(
@@ -331,8 +353,12 @@ class Configurations:
         )
 
     def change_received_messages(self, message_ids):
-        text = ", ".join(f"0x{message_id:03X}" for message_id in message_ids)
-        self.window["received_messages"].update(f"MESSAGES: {text or '--'}")
+        messages = [f"0x{message_id:03X}" for message_id in message_ids]
+        split_at = (len(messages) + 1) // 2
+        first_line = ", ".join(messages[:split_at]) or "--"
+        second_line = ", ".join(messages[split_at:])
+        self.window["received_messages_1"].update(f"MESSAGES: {first_line}")
+        self.window["received_messages_2"].update(second_line)
 
     def set_recording_pending(self, starting):
         self.recording_pending = True
