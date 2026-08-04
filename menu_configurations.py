@@ -226,7 +226,7 @@ class Configurations:
             [sg.Text("Ambiguity State", justification="center", expand_x=True)],
             [sg.Push(), *sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[:2]), []), sg.Push()],
             [sg.Push(), *sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[2:]), []), sg.Push()],
-        ], justification="center", expand_x=True)
+        ], justification="center", expand_x=True, vertical_alignment="top")
 
         invalid_rows = []
         for start in range(0, len(INVALID_STATE_OPTIONS), 6):
@@ -239,12 +239,13 @@ class Configurations:
         invalid = sg.Column(
             [[sg.Text("Cluster Invalid State", expand_x=True, justification="center")], *invalid_rows],
             expand_x=True,
+            vertical_alignment="top",
         )
-        return [
-            [ambiguity],
-            [sg.HorizontalSeparator()],
-            [invalid],
-        ]
+        return [[
+            ambiguity,
+            sg.VSep(),
+            invalid,
+        ]]
 
     @staticmethod
     def _create_record_layout():

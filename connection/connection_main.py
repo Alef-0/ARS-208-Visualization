@@ -5,18 +5,22 @@ import signal
 import cv2 as cv
 
 from connection.connection_communication import Can_Connection
-from connection.connection_packages import (
+from connection.cluster_messages import (
     Clusters_messages,
-    Objects_messages,
+    read_701_cluster_list as r701,
+    read_702_quality_info as r702,
+)
+from connection.connection_packages import (
     create_200_radar_configuration as c200,
     read_201_radar_state_extended as r201,
+)
+from connection.object_messages import (
+    Objects_messages,
     read_60a_object_status as r60a,
     read_60b_object_general as r60b,
     read_60c_object_quality as r60c,
     read_60d_object_extended as r60d,
     read_60e_object_warning as r60e,
-    read_701_cluster_list as r701,
-    read_702_quality_info as r702,
 )
 from graph.graph_draw import Graph_radar
 from graph.graph_filter import Filter_graph
