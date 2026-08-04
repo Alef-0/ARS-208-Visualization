@@ -1,12 +1,17 @@
+import math
 from typing import Iterable
 
 from connection.connection_packages import (
     Clusters_messages,
+    MISSING_QUALITY,
     Objects_messages,
     RadarObject,
     RadarPoint,
 )
 from interface.filter_schema import DYNAMIC_COLORS_BGR, PDH_KEY, RCS_KEY, parse_filter_key
+
+
+UNKNOWN_DYNAMIC_COLOR_BGR = (128, 128, 128)
 
 
 class Filter_graph:
@@ -52,18 +57,61 @@ class Filter_graph:
         else:
             selected.discard(value)
 
-    def allowed(self, dyn: int, pdh: int, ambg: int, inv: int, rcs: float) -> bool:
+    @staticmethod
+    def _is_missing(value) -> bool:
+        if value in (None, MISSING_QUALITY):
+            return True
+        return isinstance(value, float) and math.isnan(value)
+
+    @classmethod
+    def _optional_selection_allowed(cls, value, selected: set[int]) -> bool:
+        return cls._is_missing(value) or not selected or value in selected
+
+    def _dynamic_allowed(self, dynamic_property: int | None) -> bool:
+        return self._optional_selection_allowed(
+            dynamic_property,
+            self.enabled_values["dynamic_property"],
+        )
+
+    def _rcs_allowed(self, rcs: float | None) -> bool:
+        return self._is_missing(rcs) or rcs >= self.rcs_min
+
+    def _color(self, dynamic_property: int | None):
+        if self._is_missing(dynamic_property):
+            return UNKNOWN_DYNAMIC_COLOR_BGR
+        try:
+            return DYNAMIC_COLORS_BGR[dynamic_property]
+        except (IndexError, TypeError):
+            return UNKNOWN_DYNAMIC_COLOR_BGR
+
+    @staticmethod
+    def _coordinates_available(x, y) -> bool:
+        try:
+            return math.isfinite(x) and math.isfinite(y)
+        except TypeError:
+            return False
+
+    def allowed(self, dyn: int | None, pdh: int, ambg: int, inv: int, rcs: float | None) -> bool:
+        pdh_allowed = self._is_missing(pdh) or 0 < pdh <= self.pdh_max
         return (
-            dyn in self.enabled_values["dynamic_property"]
-            and 0 < pdh <= self.pdh_max
-            and ambg in self.enabled_values["ambiguity_state"]
-            and inv in self.enabled_values["invalid_state"]
-            and rcs >= self.rcs_min
+            self._dynamic_allowed(dyn)
+            and self._rcs_allowed(rcs)
+            and pdh_allowed
+            and self._optional_selection_allowed(
+                ambg,
+                self.enabled_values["ambiguity_state"],
+            )
+            and self._optional_selection_allowed(
+                inv,
+                self.enabled_values["invalid_state"],
+            )
         )
 
     def filter_point_sequence(self, points: Iterable[RadarPoint]):
         all_x, all_y, colors = [], [], []
         for point in points:
+            if not self._coordinates_available(point.dist_latitude, point.dist_long):
+                continue
             if not self.allowed(
                 point.dynamic_property,
                 point.pdh,
@@ -74,18 +122,19 @@ class Filter_graph:
                 continue
             all_x.append(point.dist_latitude)
             all_y.append(point.dist_long)
-            colors.append(DYNAMIC_COLORS_BGR[point.dynamic_property])
+            colors.append(self._color(point.dynamic_property))
         return all_x, all_y, colors
 
     def filter_object_sequence(self, objects: Iterable[RadarObject]):
         all_x, all_y, colors = [], [], []
-        enabled_dynamic = self.enabled_values["dynamic_property"]
         for obj in objects:
-            if obj.dynamic_property not in enabled_dynamic or obj.rcs < self.rcs_min:
+            if not self._coordinates_available(obj.dist_latitude, obj.dist_long):
+                continue
+            if not self._dynamic_allowed(obj.dynamic_property) or not self._rcs_allowed(obj.rcs):
                 continue
             all_x.append(obj.dist_latitude)
             all_y.append(obj.dist_long)
-            colors.append(DYNAMIC_COLORS_BGR[obj.dynamic_property])
+            colors.append(self._color(obj.dynamic_property))
         return all_x, all_y, colors
 
     def filter_points(self, messages: Clusters_messages):

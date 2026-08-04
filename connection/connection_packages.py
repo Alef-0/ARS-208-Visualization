@@ -31,14 +31,7 @@ class RadarPoint:
 
     @property
     def has_general_data(self) -> bool:
-        return None not in (
-            self.dist_long,
-            self.dist_latitude,
-            self.velocity_longitude,
-            self.velocity_latitude,
-            self.dynamic_property,
-            self.rcs,
-        )
+        return None not in (self.dist_long, self.dist_latitude)
 
 
 @dataclass(frozen=True)
@@ -66,17 +59,17 @@ class RadarObject:
     orientation_rms: float | None = None
     measurement_state: int | None = None
     probability_of_existence: int | None = None
+    acceleration_longitude: float | None = None
+    acceleration_latitude: float | None = None
+    object_class: int | None = None
+    orientation_angle: float | None = None
+    length: float | None = None
+    width: float | None = None
+    collision_detection_regions: int | None = None
 
     @property
     def has_general_data(self) -> bool:
-        return None not in (
-            self.dist_long,
-            self.dist_latitude,
-            self.velocity_longitude,
-            self.velocity_latitude,
-            self.dynamic_property,
-            self.rcs,
-        )
+        return None not in (self.dist_long, self.dist_latitude)
 
 
 class Clusters_messages:
@@ -173,6 +166,29 @@ class Objects_messages:
         obj.measurement_state = measurement_state
         obj.probability_of_existence = probability_of_existence
 
+    def fill_60d(self, message: tuple):
+        (
+            object_id,
+            acceleration_longitude,
+            object_class,
+            acceleration_latitude,
+            orientation_angle,
+            length,
+            width,
+        ) = message
+        obj = self.objects.setdefault(object_id, RadarObject(object_id))
+        obj.acceleration_longitude = acceleration_longitude
+        obj.object_class = object_class
+        obj.acceleration_latitude = acceleration_latitude
+        obj.orientation_angle = orientation_angle
+        obj.length = length
+        obj.width = width
+
+    def fill_60e(self, message: tuple):
+        object_id, collision_detection_regions = message
+        obj = self.objects.setdefault(object_id, RadarObject(object_id))
+        obj.collision_detection_regions = collision_detection_regions
+
     def snapshot(self) -> tuple[RadarObject, ...]:
         return tuple(
             RadarObject(**vars(obj))
@@ -190,6 +206,7 @@ def create_200_radar_configuration(
     ok_distance, distance, ok_radarpower, radarpower,
     ok_output, output, ok_rcs, rcs,
     ok_qual, quality, save_nvm,
+    ok_ext=False, ext_info=0, ok_relay=False, ctrl_relay=0,
 ):
     payload = bytearray(8)
     payload[0] = (
@@ -197,30 +214,63 @@ def create_200_radar_configuration(
         | (int(bool(ok_radarpower)) << 2)
         | (int(bool(ok_output)) << 3)
         | (int(bool(ok_qual)) << 4)
+        | (int(bool(ok_ext)) << 5)
         | (int(bool(save_nvm)) << 7)
     )
     payload[1] = (distance >> 2) & 0xFF
     payload[2] = (distance & 0x03) << 6
     payload[4] = ((output & 0x03) << 3) | ((radarpower & 0x07) << 5)
-    payload[5] = ((quality & 0x01) << 2) | (int(bool(save_nvm)) << 7)
+    payload[5] = (
+        (int(bool(ok_relay)) << 0)
+        | (int(bool(ctrl_relay)) << 1)
+        | ((quality & 0x01) << 2)
+        | ((ext_info & 0x01) << 3)
+        | (int(bool(save_nvm)) << 7)
+    )
     payload[6] = int(bool(ok_rcs)) | ((rcs & 0x07) << 1)
     return int.from_bytes(payload, byteorder="big", signed=False)
 
 
-def read_201_radar_state(package: bytes):
+def read_201_radar_state_extended(package: bytes):
     _check_payload(package)
     max_distance_cfg = (package[1] << 2) | (package[2] >> 6)
     radar_power_cfg = ((package[3] & 0x03) << 1) | ((package[4] >> 7) & 0x01)
     output_type_cfg = (package[5] >> 2) & 0x03
+    ctrl_relay_cfg = (package[5] >> 1) & 0x01
     send_quality_cfg = (package[5] >> 4) & 0x01
+    send_ext_info_cfg = (package[5] >> 5) & 0x01
     rcs_threshold = (package[7] >> 2) & 0x07
+    raw_payload = hex(int.from_bytes(package, byteorder="big", signed=False))
     return (
         max_distance_cfg,
         radar_power_cfg,
         output_type_cfg,
         rcs_threshold,
         send_quality_cfg,
-        hex(int.from_bytes(package, byteorder="big", signed=False)),
+        send_ext_info_cfg,
+        ctrl_relay_cfg,
+        raw_payload,
+    )
+
+
+def read_201_radar_state(package: bytes):
+    (
+        max_distance_cfg,
+        radar_power_cfg,
+        output_type_cfg,
+        rcs_threshold,
+        send_quality_cfg,
+        _,
+        _,
+        raw_payload,
+    ) = read_201_radar_state_extended(package)
+    return (
+        max_distance_cfg,
+        radar_power_cfg,
+        output_type_cfg,
+        rcs_threshold,
+        send_quality_cfg,
+        raw_payload,
     )
 
 
@@ -277,6 +327,31 @@ def read_60c_object_quality(package: bytes):
         measurement_state,
         probability_of_existence,
     )
+
+
+def read_60d_object_extended(package: bytes):
+    _check_payload(package)
+    object_id = package[0]
+    acceleration_longitude = (package[1] << 3) | (package[2] >> 5)
+    object_class = package[3] & 0x07
+    acceleration_latitude = ((package[2] & 0x1F) << 4) | (package[3] >> 4)
+    orientation_angle = (package[4] << 2) | (package[5] >> 6)
+    length = package[6]
+    width = package[7]
+    return (
+        object_id,
+        acceleration_longitude * 0.01 - 10.0,
+        object_class,
+        acceleration_latitude * 0.01 - 2.5,
+        orientation_angle * 0.4 - 180.0,
+        length * 0.2,
+        width * 0.2,
+    )
+
+
+def read_60e_object_warning(package: bytes):
+    _check_payload(package)
+    return package[0], package[1]
 
 
 def read_701_cluster_list(package: bytes):

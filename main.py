@@ -217,6 +217,8 @@ def _apply_status_message(
     match message:
         case "message_201":
             config.change_radar(payload)
+        case "received_messages":
+            config.change_received_messages(payload)
         case "change_radar":
             config.change_connection_radar(payload)
             _maybe_start_playback(config, runtime, send_playback)

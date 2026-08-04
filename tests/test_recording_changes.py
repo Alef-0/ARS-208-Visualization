@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from connection.connection_packages import MISSING_QUALITY, RadarObject, RadarPoint
+from connection.connection_packages import MISSING_QUALITY, RadarPoint
 import recording.camera_snapshot_recorder as camera_module
 import recording.point_cloud_reader as reader_module
 import recording.point_cloud_recorder as recorder_module
@@ -116,11 +116,12 @@ class RecordingChangesTests(unittest.TestCase):
         self.assertEqual(reader.clusters[0].cluster_id, 3)
         self.assertEqual(reader.objects, ())
 
-    def test_point_cloud_reader_restores_optional_object_quality(self):
+    def test_point_cloud_reader_restores_extended_object_fields(self):
         values = [[
             8, 40.0, -2.0, 3.5, 0.25, 1, -6.0,
             np.nan, 0.063, 0.105, 0.288, np.nan, 2.187, 180.0,
             MISSING_QUALITY, 7,
+            1.25, -0.25, 4, 12.0, 4.2, 1.8, 0x81,
         ]]
         FakeReaderCloud.current = FakeReaderCloud(recorder_module.OBJECT_PCD_FIELDS, values)
         with TemporaryDirectory() as folder:
@@ -134,6 +135,31 @@ class RecordingChangesTests(unittest.TestCase):
         self.assertIsNone(obj.acceleration_latitude_rms)
         self.assertIsNone(obj.measurement_state)
         self.assertEqual(obj.probability_of_existence, 7)
+        self.assertAlmostEqual(obj.acceleration_longitude, 1.25)
+        self.assertEqual(obj.object_class, 4)
+        self.assertEqual(obj.collision_detection_regions, 0x81)
+
+    def test_point_cloud_reader_supports_legacy_object_schema(self):
+        values = [[
+            8, 40.0, -2.0, 3.5, 0.25, 1, -6.0,
+            np.nan, 0.063, 0.105, 0.288, np.nan, 2.187, 180.0,
+            MISSING_QUALITY, 7,
+        ]]
+        FakeReaderCloud.current = FakeReaderCloud(
+            recorder_module.LEGACY_OBJECT_PCD_FIELDS,
+            values,
+        )
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "legacy.pcd"
+            path.write_bytes(b"pcd")
+            reader = reader_module.PointCloudReader(path)
+
+        obj = reader.objects[0]
+        self.assertEqual(reader.frame_type, "object")
+        self.assertIsNone(obj.measurement_state)
+        self.assertEqual(obj.probability_of_existence, 7)
+        self.assertIsNone(obj.object_class)
+        self.assertIsNone(obj.collision_detection_regions)
 
     def test_camera_recorder_throttles_to_four_frames_per_second(self):
         original_imwrite = camera_module.cv.imwrite

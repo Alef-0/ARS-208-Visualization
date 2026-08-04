@@ -52,7 +52,18 @@ class Configurations:
             ]],
             title_location=sg.TITLE_LOCATION_TOP,
         )
-        warning = [sg.Push(), sg.Text("CLUSTER + QUALITY FOR GRAPHS"), sg.Push(), gps, sg.Push()]
+        message_status = [
+            sg.Push(),
+            sg.Text(
+                "MESSAGES: --",
+                key="received_messages",
+                expand_x=True,
+                justification="center",
+            ),
+            sg.Push(),
+            gps,
+            sg.Push(),
+        ]
         columns = []
         names = ("LEFT", "MIDDLE", "RIGHT")
         letters = ("A", "B", "C")
@@ -63,7 +74,9 @@ class Configurations:
                 [sg.Text("Radar", expand_x=True), sg.Text("XXX", key=f"RPW_{channel}", justification="right")],
                 [sg.Text("Output", expand_x=True), sg.Text("XXX", key=f"OUT_{channel}", justification="right")],
                 [sg.Text("RCS", expand_x=True), sg.Text("XXX", key=f"RCS_{channel}", justification="right")],
-                [sg.Text("Extra Info", expand_x=True), sg.Text("XXX", key=f"EXT_{channel}", justification="right")],
+                [sg.Text("Quality", expand_x=True), sg.Text("XXX", key=f"QUALITY_{channel}", justification="right")],
+                [sg.Text("Extended Info", expand_x=True), sg.Text("XXX", key=f"EXT_{channel}", justification="right")],
+                [sg.Text("Control Relay", expand_x=True), sg.Text("XXX", key=f"RELAY_{channel}", justification="right")],
                 [sg.Radio(f"Visualizar Grupo {letter}", "visu_radar", key=f"choose_{channel}", default=channel == 2, enable_events=True)],
             ])
             columns.extend([sg.Push(), column, sg.Push()])
@@ -71,7 +84,7 @@ class Configurations:
                 columns.append(sg.VSep())
         self.FRAME = [sg.Frame(
             "Real Time Configurations",
-            [columns, warning],
+            [columns, message_status],
             expand_x=True,
             title_location=sg.TITLE_LOCATION_TOP,
         )]
@@ -114,7 +127,13 @@ class Configurations:
                 sg.Push(),
                 sg.Combo(self.OUTPUT, self.OUTPUT[2], key="OUT", readonly=True, size=(15, 1)),
             ],
-            [sg.Push(), sg.Checkbox("Send Quality", key="CHECK_QUALITY", default=True), sg.Push()],
+            [
+                sg.Push(),
+                sg.Checkbox("Quality", key="CHECK_QUALITY", default=True),
+                sg.Checkbox("Extended Info", key="CHECK_EXTENDED", default=True),
+                sg.Checkbox("Control Relay", key="CHECK_RELAY", default=True),
+                sg.Push(),
+            ],
             [
                 sg.Button(
                     "OPEN RADAR",
@@ -177,14 +196,14 @@ class Configurations:
             [sg.Text("Minimum RCS (dBm²)", expand_x=True, justification="center")],
             [sg.Slider((-64.0, 63.5), default_value=-20.0, orientation="h", resolution=0.5,
                        expand_x=True, enable_events=True, key=RCS_KEY, disable_number_display=True)],
-            [sg.Push(), sg.Text("-20.0", key="RCS_FILTER_VALUE"), sg.Push()],
+            [sg.Push(), sg.Text("-20.0", key="RCS_FILTER_VALUE"), sg.Push()]
         ], expand_x=True)
 
         ambiguity = sg.Column([
             [sg.Text("Ambiguity State", justification="center", expand_x=True)],
             [sg.Push(), *sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[:2]), []), sg.Push()],
             [sg.Push(), *sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[2:]), []), sg.Push()],
-        ], justification="center")
+            ], justification="center")
 
         invalid_rows = []
         for start in range(0, len(INVALID_STATE_OPTIONS), 6):
@@ -289,8 +308,13 @@ class Configurations:
             button_color=("white", "red" if connection else "green"),
         )
         self._refresh_mode_controls()
+        if not connection:
+            self.change_received_messages(())
         for channel in range(1, 4):
-            self.change_radar({f"{key}_{channel}": "XXX" for key in ("DISTANCE", "RPW", "OUT", "RCS", "EXT")})
+            self.change_radar({
+                f"{key}_{channel}": "XXX"
+                for key in ("DISTANCE", "RPW", "OUT", "RCS", "QUALITY", "EXT", "RELAY")
+            })
 
     def change_connection_cam(self, connection):
         self.connected_cam = connection
@@ -305,6 +329,10 @@ class Configurations:
             "CLOSE GPS" if connection else "OPEN GPS",
             button_color=("white", "red" if connection else "green"),
         )
+
+    def change_received_messages(self, message_ids):
+        text = ", ".join(f"0x{message_id:03X}" for message_id in message_ids)
+        self.window["received_messages"].update(f"MESSAGES: {text or '--'}")
 
     def set_recording_pending(self, starting):
         self.recording_pending = True
@@ -323,7 +351,10 @@ class Configurations:
             button_color=("white", "red" if self.recording else "green"),
         )
         if self.recording:
-            letters = ", ".join(self.RADAR_LETTERS[int(channel)] for channel in sorted(payload.get("folders", {})))
+            letters = ", ".join(
+                self.RADAR_LETTERS[int(channel)]
+                for channel in sorted(payload.get("folders", {}))
+            )
             self.window["record_status"].update(f"RECORDING: {letters}")
         else:
             self._update_recording_count_text("SAVED" if self.recording_counts else "IDLE")

@@ -41,7 +41,7 @@ CLUSTER_PCD_TYPES = (
     np.uint32,
     np.uint32,
 )
-OBJECT_PCD_FIELDS = (
+LEGACY_OBJECT_PCD_FIELDS = (
     "ID",
     "dist_long",
     "dist_latitude",
@@ -59,7 +59,7 @@ OBJECT_PCD_FIELDS = (
     "measurement_state",
     "probability_of_existence",
 )
-OBJECT_PCD_TYPES = (
+LEGACY_OBJECT_PCD_TYPES = (
     np.uint32,
     np.float32,
     np.float32,
@@ -75,6 +75,24 @@ OBJECT_PCD_TYPES = (
     np.float32,
     np.float32,
     np.uint32,
+    np.uint32,
+)
+OBJECT_PCD_FIELDS = LEGACY_OBJECT_PCD_FIELDS + (
+    "acceleration_longitude",
+    "acceleration_latitude",
+    "object_class",
+    "orientation_angle",
+    "length",
+    "width",
+    "collision_detection_regions",
+)
+OBJECT_PCD_TYPES = LEGACY_OBJECT_PCD_TYPES + (
+    np.float32,
+    np.float32,
+    np.uint32,
+    np.float32,
+    np.float32,
+    np.float32,
     np.uint32,
 )
 
@@ -93,7 +111,9 @@ def _float_or_nan(value: float | None) -> float:
 
 
 def _int_or_missing(value: int | None) -> int:
-    return MISSING_QUALITY if value is None else value
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return MISSING_QUALITY
+    return int(value)
 
 
 def _timestamp(value: datetime | str) -> str:
@@ -274,13 +294,13 @@ class PointCloudRecorder:
                     point.cluster_id,
                     point.dist_long,
                     point.dist_latitude,
-                    point.velocity_longitude,
-                    point.velocity_latitude,
-                    point.dynamic_property,
-                    point.rcs,
-                    point.pdh,
-                    point.ambiguity_state,
-                    point.invalid_flag,
+                    _float_or_nan(point.velocity_longitude),
+                    _float_or_nan(point.velocity_latitude),
+                    _int_or_missing(point.dynamic_property),
+                    _float_or_nan(point.rcs),
+                    _int_or_missing(point.pdh),
+                    _int_or_missing(point.ambiguity_state),
+                    _int_or_missing(point.invalid_flag),
                 )
         elif frame_type == "object":
             fields, types = OBJECT_PCD_FIELDS, OBJECT_PCD_TYPES
@@ -290,10 +310,10 @@ class PointCloudRecorder:
                     obj.object_id,
                     obj.dist_long,
                     obj.dist_latitude,
-                    obj.velocity_longitude,
-                    obj.velocity_latitude,
-                    obj.dynamic_property,
-                    obj.rcs,
+                    _float_or_nan(obj.velocity_longitude),
+                    _float_or_nan(obj.velocity_latitude),
+                    _int_or_missing(obj.dynamic_property),
+                    _float_or_nan(obj.rcs),
                     _float_or_nan(obj.dist_long_rms),
                     _float_or_nan(obj.velocity_longitude_rms),
                     _float_or_nan(obj.dist_latitude_rms),
@@ -303,6 +323,13 @@ class PointCloudRecorder:
                     _float_or_nan(obj.orientation_rms),
                     _int_or_missing(obj.measurement_state),
                     _int_or_missing(obj.probability_of_existence),
+                    _float_or_nan(obj.acceleration_longitude),
+                    _float_or_nan(obj.acceleration_latitude),
+                    _int_or_missing(obj.object_class),
+                    _float_or_nan(obj.orientation_angle),
+                    _float_or_nan(obj.length),
+                    _float_or_nan(obj.width),
+                    _int_or_missing(obj.collision_detection_regions),
                 )
         else:
             raise ValueError(f"Unsupported radar frame type: {frame_type}")
