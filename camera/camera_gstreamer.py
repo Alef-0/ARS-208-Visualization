@@ -7,6 +7,8 @@ import cv2 as cv
 import gi
 import numpy as np
 
+from recording import CameraSnapshotRecorder
+
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst
 
@@ -35,10 +37,39 @@ class GStreamerPipeline:
         self.attempt_started = 0.0
         self.exit_reason = _RESULT_FAILURE
         self.channel_changed = False
+        self.snapshot_recorder = CameraSnapshotRecorder(self._report_snapshot)
 
     @staticmethod
     def create_url(channel):
         return f"rtsp://admin:l1v3user5@192.168.1.108:554/cam/realmonitor?channel={channel}&subtype=0"
+
+    def _put_status(self, message, payload):
+        try:
+            self.pool.put((message, payload), timeout=0.2)
+        except queue.Full:
+            pass
+
+    def _report_snapshot(self, payload):
+        self._put_status("camera_snapshot", payload)
+
+    def _start_snapshot_recording(self, folders):
+        try:
+            self.snapshot_recorder.start(folders)
+            self._put_status("camera_recording_state", {"active": True})
+        except Exception as error:
+            self._put_status("camera_recording_error", str(error))
+            self._put_status("camera_recording_state", {"active": False})
+
+    def _stop_snapshot_recording(self):
+        try:
+            count = self.snapshot_recorder.stop()
+            self._put_status(
+                "camera_recording_state",
+                {"active": False, "count": count},
+            )
+        except Exception as error:
+            self._put_status("camera_recording_error", str(error))
+            self._put_status("camera_recording_state", {"active": False})
 
     def on_new_sample(self, sink):
         sample = sink.emit("pull-sample")
@@ -62,6 +93,7 @@ class GStreamerPipeline:
                 except queue.Empty:
                     pass
                 self.frames.put_nowait(frame)
+            self.snapshot_recorder.submit(frame)
         finally:
             buffer.unmap(map_info)
         return Gst.FlowReturn.OK
@@ -81,6 +113,7 @@ class GStreamerPipeline:
             while self.communicate.poll():
                 event, value = self.communicate.recv()
                 if event == "STOP":
+                    self._stop_snapshot_recording()
                     self.shutdown_event.set()
                     self.connected = False
                     self.exit_reason = _RESULT_CLOSED
@@ -95,20 +128,28 @@ class GStreamerPipeline:
                     if self.connected:
                         self.connected = False
                         self.exit_reason = _RESULT_CLOSED
-                        self.pool.put(("change_cam", False))
+                        self._put_status("change_cam", False)
                         restart = True
                     else:
                         try:
                             with socket.create_connection(("192.168.1.108", 554), timeout=2):
                                 self.connected = True
-                                self.pool.put(("change_cam", True))
+                                self._put_status("change_cam", True)
                         except OSError:
-                            self.pool.put(("change_cam", False))
+                            self._put_status("change_cam", False)
+                elif event == "record_start":
+                    self._start_snapshot_recording(value.get("folders", {}))
+                elif event == "record_stop":
+                    self._stop_snapshot_recording()
         except (EOFError, OSError):
             self.shutdown_event.set()
             self.connected = False
             self.exit_reason = _RESULT_CLOSED
             restart = True
+
+        snapshot_error = self.snapshot_recorder.poll_error()
+        if snapshot_error is not None and self.snapshot_recorder.active:
+            self._stop_snapshot_recording()
 
         if (restart or self.shutdown_event.is_set()) and self.main_loop:
             self.main_loop.quit()
@@ -241,12 +282,13 @@ def gstreamer_main(connection, pool, shutdown_event):
                     f"{MAX_PIPELINE_ATTEMPTS} attempts"
                 )
                 pipeline.connected = False
-                pool.put(("change_cam", False))
+                pipeline._put_status("change_cam", False)
                 failed_attempts = 0
                 continue
 
             shutdown_event.wait(PIPELINE_RETRY_DELAY_SECONDS)
     finally:
+        pipeline._stop_snapshot_recording()
         pipeline._remove_sources()
         if pipeline.pipeline:
             pipeline.pipeline.set_state(Gst.State.NULL)

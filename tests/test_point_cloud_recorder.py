@@ -73,6 +73,13 @@ class PointCloudRecorderTests(unittest.TestCase):
             orientation_rms=180.0,
             measurement_state=2,
             probability_of_existence=7,
+            acceleration_longitude=1.25,
+            acceleration_latitude=-0.25,
+            object_class=4,
+            orientation_angle=12.0,
+            length=4.2,
+            width=1.8,
+            collision_detection_regions=0x81,
         )
 
     def test_session_creates_one_timestamped_folder_per_radar(self):
@@ -134,18 +141,30 @@ class PointCloudRecorderTests(unittest.TestCase):
         cloud, = FakePointCloud.calls
         self.assertEqual(cloud.fields, recorder_module.OBJECT_PCD_FIELDS)
         self.assertTrue(all(np.dtype(dtype).itemsize == 4 for dtype in cloud.types))
-        values = tuple(cloud.values[0])
-        self.assertEqual(values[:11], (
-            8, 40.0, -2.0, 3.5, 0.25, 1, -6.0,
-            0.014, 0.063, 0.105, 0.288,
-        ))
-        self.assertTrue(math.isnan(values[11]))
-        self.assertEqual(values[12:], (2.187, 180.0, 2, 7))
+        values = dict(zip(cloud.fields, cloud.values[0]))
+        self.assertEqual(
+            tuple(values[field] for field in recorder_module.OBJECT_PCD_FIELDS[:11]),
+            (8, 40.0, -2.0, 3.5, 0.25, 1, -6.0, 0.014, 0.063, 0.105, 0.288),
+        )
+        self.assertTrue(math.isnan(values["acceleration_latitude_rms"]))
+        self.assertEqual(values["acceleration_longitude_rms"], 2.187)
+        self.assertEqual(values["orientation_rms"], 180.0)
+        self.assertEqual(values["measurement_state"], 2)
+        self.assertEqual(values["probability_of_existence"], 7)
+        self.assertEqual(values["acceleration_longitude"], 1.25)
+        self.assertEqual(values["acceleration_latitude"], -0.25)
+        self.assertEqual(values["object_class"], 4)
+        self.assertEqual(values["orientation_angle"], 12.0)
+        self.assertEqual(values["length"], 4.2)
+        self.assertEqual(values["width"], 1.8)
+        self.assertEqual(values["collision_detection_regions"], 0x81)
 
     def test_object_frame_marks_missing_quality_values(self):
         obj = self.radar_object()
         obj.measurement_state = None
         obj.probability_of_existence = None
+        obj.object_class = None
+        obj.collision_detection_regions = None
         with TemporaryDirectory() as folder:
             session = recorder_module.RadarRecordingSession()
             session.start(folder, (3,))
@@ -154,8 +173,12 @@ class PointCloudRecorderTests(unittest.TestCase):
             )
             session.stop()
 
-        values = tuple(FakePointCloud.calls[0].values[0])
-        self.assertEqual(values[-2:], (MISSING_QUALITY, MISSING_QUALITY))
+        cloud = FakePointCloud.calls[0]
+        values = dict(zip(cloud.fields, cloud.values[0]))
+        self.assertEqual(values["measurement_state"], MISSING_QUALITY)
+        self.assertEqual(values["probability_of_existence"], MISSING_QUALITY)
+        self.assertEqual(values["object_class"], MISSING_QUALITY)
+        self.assertEqual(values["collision_detection_regions"], MISSING_QUALITY)
 
     def test_empty_radar_frame_is_stored(self):
         recorded_at = datetime.now(timezone.utc)

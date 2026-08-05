@@ -5,16 +5,22 @@ import signal
 import cv2 as cv
 
 from connection.connection_communication import Can_Connection
-from connection.connection_packages import (
+from connection.cluster_messages import (
     Clusters_messages,
-    Objects_messages,
+    read_701_cluster_list as r701,
+    read_702_quality_info as r702,
+)
+from connection.connection_packages import (
     create_200_radar_configuration as c200,
-    read_201_radar_state as r201,
+    read_201_radar_state_extended as r201,
+)
+from connection.object_messages import (
+    Objects_messages,
     read_60a_object_status as r60a,
     read_60b_object_general as r60b,
     read_60c_object_quality as r60c,
-    read_701_cluster_list as r701,
-    read_702_quality_info as r702,
+    read_60d_object_extended as r60d,
+    read_60e_object_warning as r60e,
 )
 from graph.graph_draw import Graph_radar
 from graph.graph_filter import Filter_graph
@@ -34,14 +40,38 @@ def _put_status(pool, message, payload, *, critical=False):
         pass
 
 
+def _configuration_label(options, index):
+    try:
+        return options[index]
+    except (IndexError, TypeError):
+        return f"Unknown ({index})"
+
+
 def treat_201_message(channel, payload, pool):
-    distance, radar_power, output_type, rcs_threshold, send_quality, _ = r201(payload)
+    (
+        distance,
+        radar_power,
+        output_type,
+        rcs_threshold,
+        send_quality,
+        send_ext_info,
+        ctrl_relay,
+        _,
+    ) = r201(payload)
     values = {
         f"DISTANCE_{channel}": distance * 2,
-        f"RPW_{channel}": ["STANDARD", "-3db TX", "-6db TX", "-9db TX"][radar_power],
-        f"OUT_{channel}": ["None", "Objects", "Clusters"][output_type],
-        f"RCS_{channel}": ["Standard", "High Sensitivity"][rcs_threshold],
-        f"EXT_{channel}": ["No", "Ok"][send_quality],
+        f"RPW_{channel}": _configuration_label(
+            ("STANDARD", "-3db TX", "-6db TX", "-9db TX"), radar_power
+        ),
+        f"OUT_{channel}": _configuration_label(
+            ("None", "Objects", "Clusters"), output_type
+        ),
+        f"RCS_{channel}": _configuration_label(
+            ("Standard", "High Sensitivity"), rcs_threshold
+        ),
+        f"QUALITY_{channel}": ["Inactive", "Active"][send_quality],
+        f"EXT_{channel}": ["Inactive", "Active"][send_ext_info],
+        f"RELAY_{channel}": ["Inactive", "Active"][ctrl_relay],
     }
     _put_status(pool, "message_201", values)
 
@@ -52,7 +82,10 @@ def send_configuration_message(values, connection, save_nvm):
         values["CHECK_RPW"], ["STANDARD", "-3dB Tx gain", "-6dB Tx gain", "-9dB Tx gain"].index(values["RPW"]),
         values["CHECK_OUT"], ["NONE", "OBJECT", "CLUSTERS"].index(values["OUT"]),
         values["CHECK_RCS"], ["STANDARD", "HIGH SENSITIVITY"].index(values["RCS"]),
-        values["CHECK_QUALITY"], 1, save_nvm,
+        True, int(bool(values["CHECK_QUALITY"])),
+        save_nvm,
+        ok_ext=True, ext_info=int(bool(values["CHECK_EXTENDED"])),
+        ok_relay=True, ctrl_relay=int(bool(values["CHECK_RELAY"])),
     )
     for channel in RADAR_CHANNELS:
         if values.get(f"send_{channel}") or values.get("send_all"):
@@ -97,11 +130,18 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
     frame_types: dict[int, str] = {}
     frame_timestamps: dict[int, datetime] = {}
     recording_ready: dict[int, bool] = {}
+    received_message_ids: set[int] = set()
     graph = Graph_radar()
     filters = Filter_graph(initial_values)
 
     def report_progress(channel, count):
         _put_status(pool, "recording_progress", {"channel": channel, "count": count})
+
+    def report_received_message(can_id):
+        if can_id in received_message_ids:
+            return
+        received_message_ids.add(can_id)
+        _put_status(pool, "received_messages", tuple(sorted(received_message_ids)))
 
     recording = RadarRecordingSession(report_progress)
 
@@ -145,6 +185,8 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                         shutdown_event.set()
                     elif event == "conn_radar":
                         connection.change_connection()
+                        received_message_ids.clear()
+                        _put_status(pool, "received_messages", ())
                         _put_status(pool, "change_radar", connection.connected, critical=True)
                         cv.destroyAllWindows()
                         if not connection.connected:
@@ -176,6 +218,14 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                             )
                         except Exception as error:
                             _put_status(pool, "recording_error", str(error), critical=True)
+                    elif event == "record_camera":
+                        captured_at = values.get("captured_at", "")
+                        for channel, filename in values.get("files", {}).items():
+                            recording.add_camera_snapshot(
+                                int(channel),
+                                filename,
+                                captured_at,
+                            )
                     elif event == "record_stop":
                         _stop_recording(recording, pool, recording_ready)
                     elif isinstance(event, str) and event.startswith("filter"):
@@ -195,10 +245,12 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
             while connection.can_create_can():
                 message = connection.create_package()
                 channel = message.canChannel
-                if message.canId == 0x201:
-                    treat_201_message(channel, message.canData, pool)
                 if channel not in cluster_messages:
                     continue
+
+                report_received_message(message.canId)
+                if message.canId == 0x201:
+                    treat_201_message(channel, message.canData, pool)
 
                 frame_type = STATUS_FRAME_TYPES.get(message.canId)
                 if frame_type is not None:
@@ -219,6 +271,10 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                         object_messages[channel].fill_60b(r60b(message.canData))
                     elif message.canId == 0x60C:
                         object_messages[channel].fill_60c(r60c(message.canData))
+                    elif message.canId == 0x60D:
+                        object_messages[channel].fill_60d(r60d(message.canData))
+                    elif message.canId == 0x60E:
+                        object_messages[channel].fill_60e(r60e(message.canData))
     finally:
         _stop_recording(recording, pool, recording_ready)
         if connection.sock:

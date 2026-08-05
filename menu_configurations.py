@@ -24,7 +24,10 @@ class Configurations:
         self.connected_radar = False
         self.connected_cam = False
         self.recording = False
+        self.recording_pending = False
         self.recording_counts = {}
+        self.playback = False
+        self.playback_pending = False
         self.create_radar_division()
         self.create_options()
         self.create_radar_control()
@@ -37,6 +40,7 @@ class Configurations:
                 widget.tk.call(f"{popdown}.f.l", "configure", "-font", ("Helvetica", 11))
                 widget.tk.call(f"{popdown}.f.l", "configure", "-justify", "center")
         self.centralize_combos()
+        self._refresh_mode_controls()
 
     def create_radar_division(self):
         gps = sg.Frame(
@@ -48,7 +52,34 @@ class Configurations:
             ]],
             title_location=sg.TITLE_LOCATION_TOP,
         )
-        warning = [sg.Push(), sg.Text("CLUSTER + QUALITY FOR GRAPHS"), sg.Push(), gps, sg.Push()]
+        received_messages = sg.Column(
+            [
+                [
+                    sg.Text(
+                        "MESSAGES: --",
+                        key="received_messages_1",
+                        expand_x=True,
+                        justification="center",
+                    )
+                ],
+                [
+                    sg.Text(
+                        "",
+                        key="received_messages_2",
+                        expand_x=True,
+                        justification="center",
+                    )
+                ],
+            ],
+            expand_x=True,
+        )
+        message_status = [
+            sg.Push(),
+            received_messages,
+            sg.Push(),
+            gps,
+            sg.Push(),
+        ]
         columns = []
         names = ("LEFT", "MIDDLE", "RIGHT")
         letters = ("A", "B", "C")
@@ -59,7 +90,9 @@ class Configurations:
                 [sg.Text("Radar", expand_x=True), sg.Text("XXX", key=f"RPW_{channel}", justification="right")],
                 [sg.Text("Output", expand_x=True), sg.Text("XXX", key=f"OUT_{channel}", justification="right")],
                 [sg.Text("RCS", expand_x=True), sg.Text("XXX", key=f"RCS_{channel}", justification="right")],
-                [sg.Text("Extra Info", expand_x=True), sg.Text("XXX", key=f"EXT_{channel}", justification="right")],
+                [sg.Text("Quality", expand_x=True), sg.Text("XXX", key=f"QUALITY_{channel}", justification="right")],
+                [sg.Text("Extended Info", expand_x=True), sg.Text("XXX", key=f"EXT_{channel}", justification="right")],
+                [sg.Text("Control Relay", expand_x=True), sg.Text("XXX", key=f"RELAY_{channel}", justification="right")],
                 [sg.Radio(f"Visualizar Grupo {letter}", "visu_radar", key=f"choose_{channel}", default=channel == 2, enable_events=True)],
             ])
             columns.extend([sg.Push(), column, sg.Push()])
@@ -67,7 +100,7 @@ class Configurations:
                 columns.append(sg.VSep())
         self.FRAME = [sg.Frame(
             "Real Time Configurations",
-            [columns, warning],
+            [columns, message_status],
             expand_x=True,
             title_location=sg.TITLE_LOCATION_TOP,
         )]
@@ -110,7 +143,13 @@ class Configurations:
                 sg.Push(),
                 sg.Combo(self.OUTPUT, self.OUTPUT[2], key="OUT", readonly=True, size=(15, 1)),
             ],
-            [sg.Push(), sg.Checkbox("Send Quality", key="CHECK_QUALITY", default=True), sg.Push()],
+            [
+                sg.Push(),
+                sg.Checkbox("Quality", key="CHECK_QUALITY", default=True),
+                sg.Checkbox("Extended Info", key="CHECK_EXTENDED", default=True),
+                sg.Checkbox("Control Relay", key="CHECK_RELAY", default=True),
+                sg.Push(),
+            ],
             [
                 sg.Button(
                     "OPEN RADAR",
@@ -171,17 +210,23 @@ class Configurations:
         ])
         rcs = sg.Column([
             [sg.Text("Minimum RCS (dBm²)", expand_x=True, justification="center")],
-            [sg.Slider((-64.0, 63.5), default_value=-64.0, orientation="h", resolution=0.5,
+            [sg.Slider((-64.0, 63.5), default_value=-20.0, orientation="h", resolution=0.5,
                        expand_x=True, enable_events=True, key=RCS_KEY, disable_number_display=True)],
-            [ sg.Push(), sg.Text("-64.0", key="RCS_FILTER_VALUE"), sg.Push(),
-]
+            [sg.Push(), sg.Text("-20.0", key="RCS_FILTER_VALUE"), sg.Push()]
         ], expand_x=True)
-        
+
+        return [
+            [dynamic],
+            [sg.HorizontalSeparator()],
+            [pdh, sg.VSep(), rcs],
+        ]
+
+    def _create_cluster_filter_layout(self):
         ambiguity = sg.Column([
             [sg.Text("Ambiguity State", justification="center", expand_x=True)],
             [sg.Push(), *sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[:2]), []), sg.Push()],
-            [sg.Push(), *sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[2:]), []), sg.Push()],        
-            ], justification="center")
+            [sg.Push(), *sum((self._option_control(option) for option in AMBIGUITY_STATE_OPTIONS[2:]), []), sg.Push()],
+        ], justification="center", expand_x=True, vertical_alignment="top")
 
         invalid_rows = []
         for start in range(0, len(INVALID_STATE_OPTIONS), 6):
@@ -190,45 +235,71 @@ class Configurations:
                 row.extend(self._option_control(option))
             row.append(sg.Push())
             invalid_rows.append(row)
-        
+
         invalid = sg.Column(
             [[sg.Text("Cluster Invalid State", expand_x=True, justification="center")], *invalid_rows],
             expand_x=True,
+            vertical_alignment="top",
         )
-        return [
-            [dynamic],
-            [sg.HorizontalSeparator()],
-            [pdh, sg.VSep(), rcs],
-            [sg.HorizontalSeparator()],
-            [ambiguity, sg.VSep(), invalid],
-        ]
+        return [[
+            ambiguity,
+            sg.VSep(),
+            invalid,
+        ]]
 
     @staticmethod
     def _create_record_layout():
-        radar_choices = [sg.Push(), sg.Text("Record radars:")]
+        recording_root = Path.cwd() / "recordings"
+        recording_root.mkdir(exist_ok=True)
+        radar_choices = [sg.Text("Radars:")]
         for channel, letter in ((1, "A"), (2, "B"), (3, "C")):
-            radar_choices.append(sg.Checkbox(letter, key=f"record_radar_{channel}", default=True))
-        radar_choices.append(sg.Push())
+            radar_choices.append(
+                sg.Checkbox(letter, key=f"record_radar_{channel}", default=True)
+            )
         return [
             [
                 sg.Text("Destination folder"),
-                sg.Input(default_text=str(Path.cwd()), key="record_folder", expand_x=True),
+                sg.Input(
+                    default_text=str(recording_root),
+                    key="record_folder",
+                    expand_x=True,
+                ),
                 sg.FolderBrowse("SELECT", key="record_browse", target="record_folder"),
             ],
-            radar_choices,
-            [sg.Button(
-                "START RECORDING",
-                key="record_toggle",
-                expand_x=True,
-                button_color=("white", "green"),
-                disabled=True,
-            )],
-            [sg.Text("IDLE", key="record_status", expand_x=True, justification="center")],
+            [
+                *radar_choices,
+                sg.Push(),
+                sg.Text("IDLE", key="record_status", justification="center"),
+                sg.Push(),
+                sg.Button(
+                    "START RECORDING",
+                    key="record_toggle",
+                    button_color=("white", "green"),
+                    disabled=True,
+                ),
+            ],
+            [sg.HorizontalSeparator()],
+            [
+                sg.Text("Playback folder"),
+                sg.Input(default_text=str(Path.cwd()), key="playback_folder", expand_x=True),
+                sg.FolderBrowse("SELECT", key="playback_browse", target="playback_folder"),
+            ],
+            [
+                sg.Push(),
+                sg.Text("IDLE", key="playback_status", justification="center"),
+                sg.Push(),
+                sg.Button(
+                    "PLAY RECORDING",
+                    key="playback_toggle",
+                    button_color=("white", "green"),
+                ),
+            ],
         ]
 
     def create_radar_control(self):
         tabs = [[
             sg.Tab("Filters", self._create_filter_layout()),
+            sg.Tab("Cluster Filtering", self._create_cluster_filter_layout()),
             sg.Tab("Record", self._create_record_layout()),
         ]]
         self.radar_control = sg.Frame(
@@ -245,16 +316,41 @@ class Configurations:
     def read(self):
         return self.window.read(10)
 
+    def _refresh_mode_controls(self):
+        live_blocked = self.playback or self.playback_pending
+        recording_inputs_disabled = self.recording or self.recording_pending or live_blocked
+        for key in ("record_folder", "record_browse", "record_radar_1", "record_radar_2", "record_radar_3"):
+            self.window[key].update(disabled=recording_inputs_disabled)
+
+        if self.recording:
+            record_disabled = False
+        else:
+            record_disabled = self.recording_pending or live_blocked or not self.connected_radar
+        self.window["record_toggle"].update(disabled=record_disabled)
+
+        playback_inputs_disabled = self.recording or self.recording_pending or self.playback or self.playback_pending
+        for key in ("playback_folder", "playback_browse"):
+            self.window[key].update(disabled=playback_inputs_disabled)
+        self.window["playback_toggle"].update(
+            disabled=self.recording or self.recording_pending or self.playback_pending,
+        )
+        for key in ("conn_radar", "conn_cam"):
+            self.window[key].update(disabled=live_blocked)
+
     def change_connection_radar(self, connection):
         self.connected_radar = connection
         self.window["conn_radar"].update(
             "CLOSE RADAR" if connection else "OPEN RADAR",
             button_color=("white", "red" if connection else "green"),
         )
-        if not self.recording:
-            self.window["record_toggle"].update(disabled=not connection)
+        self._refresh_mode_controls()
+        if not connection:
+            self.change_received_messages(())
         for channel in range(1, 4):
-            self.change_radar({f"{key}_{channel}": "XXX" for key in ("DISTANCE", "RPW", "OUT", "RCS", "EXT")})
+            self.change_radar({
+                f"{key}_{channel}": "XXX"
+                for key in ("DISTANCE", "RPW", "OUT", "RCS", "QUALITY", "EXT", "RELAY")
+            })
 
     def change_connection_cam(self, connection):
         self.connected_cam = connection
@@ -262,6 +358,7 @@ class Configurations:
             "CLOSE CAM" if connection else "OPEN CAM",
             button_color=("white", "red" if connection else "green"),
         )
+        self._refresh_mode_controls()
 
     def change_connection_gps(self, connection):
         self.window["conn_gps"].update(
@@ -269,28 +366,39 @@ class Configurations:
             button_color=("white", "red" if connection else "green"),
         )
 
+    def change_received_messages(self, message_ids):
+        messages = [f"0x{message_id:03X}" for message_id in message_ids]
+        split_at = (len(messages) + 1) // 2
+        first_line = ", ".join(messages[:split_at]) or "--"
+        second_line = ", ".join(messages[split_at:])
+        self.window["received_messages_1"].update(f"MESSAGES: {first_line}")
+        self.window["received_messages_2"].update(second_line)
+
     def set_recording_pending(self, starting):
+        self.recording_pending = True
         self.window["record_toggle"].update(
             "STARTING..." if starting else "STOPPING...",
             disabled=True,
         )
+        self._refresh_mode_controls()
 
     def change_recording(self, payload):
         self.recording = bool(payload.get("active"))
+        self.recording_pending = False
         self.recording_counts = dict(payload.get("counts", {}))
-        controls_disabled = self.recording
-        for key in ("record_folder", "record_browse", "record_radar_1", "record_radar_2", "record_radar_3"):
-            self.window[key].update(disabled=controls_disabled)
         self.window["record_toggle"].update(
             "STOP RECORDING" if self.recording else "START RECORDING",
             button_color=("white", "red" if self.recording else "green"),
-            disabled=not self.recording and not self.connected_radar,
         )
         if self.recording:
-            letters = ", ".join(self.RADAR_LETTERS[channel] for channel in sorted(payload.get("folders", {})))
+            letters = ", ".join(
+                self.RADAR_LETTERS[int(channel)]
+                for channel in sorted(payload.get("folders", {}))
+            )
             self.window["record_status"].update(f"RECORDING: {letters}")
         else:
             self._update_recording_count_text("SAVED" if self.recording_counts else "IDLE")
+        self._refresh_mode_controls()
 
     def change_recording_progress(self, payload):
         self.recording_counts[payload["channel"]] = payload["count"]
@@ -299,6 +407,40 @@ class Configurations:
     def show_recording_error(self, message):
         self.change_recording({"active": False, "counts": {}})
         sg.popup_error(message, title="Recording error")
+
+    def set_playback_pending(self):
+        self.playback_pending = True
+        self.window["playback_toggle"].update("PREPARING...", disabled=True)
+        self.window["playback_status"].update("STOPPING LIVE MONITORING")
+        self._refresh_mode_controls()
+
+    def change_playback(self, payload):
+        self.playback = bool(payload.get("active"))
+        self.playback_pending = False
+        self.window["playback_toggle"].update(
+            "STOP PLAYBACK" if self.playback else "PLAY RECORDING",
+            button_color=("white", "red" if self.playback else "green"),
+        )
+        if self.playback:
+            total = payload.get("total", 0)
+            self.window["playback_status"].update(f"PLAYING 0 / {total}")
+        elif payload.get("completed"):
+            self.window["playback_status"].update("COMPLETED")
+        else:
+            self.window["playback_status"].update("IDLE")
+        self._refresh_mode_controls()
+
+    def change_playback_progress(self, payload):
+        self.window["playback_status"].update(
+            f"PLAYING {payload['current']} / {payload['total']} — {payload['file']}"
+        )
+
+    def show_playback_error(self, message):
+        self.change_playback({"active": False, "completed": False})
+        sg.popup_error(message, title="Playback error")
+
+    def show_camera_recording_error(self, message):
+        sg.popup_error(message, title="Camera snapshot error")
 
     def _update_recording_count_text(self, prefix):
         if not self.recording_counts:

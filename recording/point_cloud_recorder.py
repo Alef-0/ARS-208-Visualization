@@ -1,3 +1,4 @@
+from collections import deque
 from datetime import datetime
 import json
 from pathlib import Path
@@ -40,7 +41,7 @@ CLUSTER_PCD_TYPES = (
     np.uint32,
     np.uint32,
 )
-OBJECT_PCD_FIELDS = (
+LEGACY_OBJECT_PCD_FIELDS = (
     "ID",
     "dist_long",
     "dist_latitude",
@@ -58,7 +59,7 @@ OBJECT_PCD_FIELDS = (
     "measurement_state",
     "probability_of_existence",
 )
-OBJECT_PCD_TYPES = (
+LEGACY_OBJECT_PCD_TYPES = (
     np.uint32,
     np.float32,
     np.float32,
@@ -76,12 +77,32 @@ OBJECT_PCD_TYPES = (
     np.uint32,
     np.uint32,
 )
+OBJECT_PCD_FIELDS = LEGACY_OBJECT_PCD_FIELDS + (
+    "acceleration_longitude",
+    "acceleration_latitude",
+    "object_class",
+    "orientation_angle",
+    "length",
+    "width",
+    "collision_detection_regions",
+)
+OBJECT_PCD_TYPES = LEGACY_OBJECT_PCD_TYPES + (
+    np.float32,
+    np.float32,
+    np.uint32,
+    np.float32,
+    np.float32,
+    np.float32,
+    np.uint32,
+)
 
 # Backwards-compatible names for code that expects the cluster schema.
 PCD_FIELDS = CLUSTER_PCD_FIELDS
 PCD_TYPES = CLUSTER_PCD_TYPES
 RADAR_LETTERS = {1: "A", 2: "B", 3: "C"}
 METADATA_FLUSH_SECONDS = 1.0
+RECORDING_METADATA_NAME = "recording.json"
+TIMESTAMPS_METADATA_NAME = "timestamps.json"
 _STOP = object()
 
 
@@ -90,7 +111,15 @@ def _float_or_nan(value: float | None) -> float:
 
 
 def _int_or_missing(value: int | None) -> int:
-    return MISSING_QUALITY if value is None else value
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return MISSING_QUALITY
+    return int(value)
+
+
+def _timestamp(value: datetime | str) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="microseconds")
+    return str(value)
 
 
 class PointCloudRecorder:
@@ -113,14 +142,18 @@ class PointCloudRecorder:
         self.channel = channel
         self.folder = root / f"recording_{RADAR_LETTERS[channel]}_{timestamp}"
         self.folder.mkdir(parents=True, exist_ok=False)
-        self.timestamps_path = self.folder / "timestamps.json"
+        self.timestamps_path = self.folder / TIMESTAMPS_METADATA_NAME
+        self.metadata_path = self.folder / RECORDING_METADATA_NAME
         self.progress_callback = progress_callback
         self.frames_written = 0
         self.error: Exception | None = None
         self._timestamps: dict[str, str] = {}
+        self._records: list[dict[str, str | None]] = []
+        self._pending_camera_frames: deque[dict[str, str]] = deque()
         self._metadata_dirty = False
         self._last_metadata_flush = time.monotonic()
-        self._write_timestamps()
+        self._metadata_lock = threading.Lock()
+        self._write_metadata()
         self._queue: queue.Queue = queue.Queue(maxsize=queue_size)
         self._thread = threading.Thread(
             target=self._write_loop,
@@ -150,6 +183,20 @@ class PointCloudRecorder:
             )
             return False
 
+    def add_camera_snapshot(self, filename: str, recorded_at: datetime | str) -> None:
+        snapshot = {
+            "camera_frame": Path(filename).name,
+            "camera_recorded_at": _timestamp(recorded_at),
+        }
+        with self._metadata_lock:
+            for record in reversed(self._records):
+                if record["camera_frame"] is None:
+                    record.update(snapshot)
+                    self._metadata_dirty = True
+                    self._flush_metadata_locked()
+                    return
+            self._pending_camera_frames.append(snapshot)
+
     def stop(self) -> None:
         while self._thread.is_alive():
             try:
@@ -158,6 +205,7 @@ class PointCloudRecorder:
             except queue.Full:
                 continue
         self._thread.join()
+        self._flush_metadata(force=True)
         if self.error is not None:
             raise self.error
 
@@ -174,9 +222,22 @@ class PointCloudRecorder:
                     path = self.folder / f"frame_{frame_number:06d}.pcd"
                     self._save(path, points, frame_type)
                     self.frames_written = frame_number
-                    self._timestamps[path.name] = recorded_at
-                    self._metadata_dirty = True
-                    self._flush_metadata()
+                    with self._metadata_lock:
+                        camera = (
+                            self._pending_camera_frames.popleft()
+                            if self._pending_camera_frames
+                            else None
+                        )
+                        self._timestamps[path.name] = recorded_at
+                        self._records.append({
+                            "point_cloud": path.name,
+                            "recorded_at": recorded_at,
+                            "frame_type": frame_type,
+                            "camera_frame": camera["camera_frame"] if camera else None,
+                            "camera_recorded_at": camera["camera_recorded_at"] if camera else None,
+                        })
+                        self._metadata_dirty = True
+                        self._flush_metadata_locked()
                     if self.progress_callback:
                         self.progress_callback(self.channel, self.frames_written)
                 finally:
@@ -189,22 +250,35 @@ class PointCloudRecorder:
                 pass
 
     def _flush_metadata(self, *, force: bool = False) -> None:
+        with self._metadata_lock:
+            self._flush_metadata_locked(force=force)
+
+    def _flush_metadata_locked(self, *, force: bool = False) -> None:
         if not self._metadata_dirty:
             return
         now = time.monotonic()
         if not force and now - self._last_metadata_flush < METADATA_FLUSH_SECONDS:
             return
-        self._write_timestamps()
+        self._write_metadata_locked()
         self._metadata_dirty = False
         self._last_metadata_flush = now
 
-    def _write_timestamps(self) -> None:
-        temporary_path = self.timestamps_path.with_suffix(".json.tmp")
+    def _write_metadata(self) -> None:
+        with self._metadata_lock:
+            self._write_metadata_locked()
+
+    def _write_metadata_locked(self) -> None:
+        self._replace_json(self.timestamps_path, self._timestamps)
+        self._replace_json(self.metadata_path, self._records)
+
+    @staticmethod
+    def _replace_json(path: Path, value: object) -> None:
+        temporary_path = path.with_suffix(path.suffix + ".tmp")
         temporary_path.write_text(
-            json.dumps(self._timestamps, indent=2) + "\n",
+            json.dumps(value, indent=2) + "\n",
             encoding="utf-8",
         )
-        temporary_path.replace(self.timestamps_path)
+        temporary_path.replace(path)
 
     @staticmethod
     def _save(
@@ -220,13 +294,13 @@ class PointCloudRecorder:
                     point.cluster_id,
                     point.dist_long,
                     point.dist_latitude,
-                    point.velocity_longitude,
-                    point.velocity_latitude,
-                    point.dynamic_property,
-                    point.rcs,
-                    point.pdh,
-                    point.ambiguity_state,
-                    point.invalid_flag,
+                    _float_or_nan(point.velocity_longitude),
+                    _float_or_nan(point.velocity_latitude),
+                    _int_or_missing(point.dynamic_property),
+                    _float_or_nan(point.rcs),
+                    _int_or_missing(point.pdh),
+                    _int_or_missing(point.ambiguity_state),
+                    _int_or_missing(point.invalid_flag),
                 )
         elif frame_type == "object":
             fields, types = OBJECT_PCD_FIELDS, OBJECT_PCD_TYPES
@@ -236,10 +310,10 @@ class PointCloudRecorder:
                     obj.object_id,
                     obj.dist_long,
                     obj.dist_latitude,
-                    obj.velocity_longitude,
-                    obj.velocity_latitude,
-                    obj.dynamic_property,
-                    obj.rcs,
+                    _float_or_nan(obj.velocity_longitude),
+                    _float_or_nan(obj.velocity_latitude),
+                    _int_or_missing(obj.dynamic_property),
+                    _float_or_nan(obj.rcs),
                     _float_or_nan(obj.dist_long_rms),
                     _float_or_nan(obj.velocity_longitude_rms),
                     _float_or_nan(obj.dist_latitude_rms),
@@ -249,6 +323,13 @@ class PointCloudRecorder:
                     _float_or_nan(obj.orientation_rms),
                     _int_or_missing(obj.measurement_state),
                     _int_or_missing(obj.probability_of_existence),
+                    _float_or_nan(obj.acceleration_longitude),
+                    _float_or_nan(obj.acceleration_latitude),
+                    _int_or_missing(obj.object_class),
+                    _float_or_nan(obj.orientation_angle),
+                    _float_or_nan(obj.length),
+                    _float_or_nan(obj.width),
+                    _int_or_missing(obj.collision_detection_regions),
                 )
         else:
             raise ValueError(f"Unsupported radar frame type: {frame_type}")
@@ -310,6 +391,18 @@ class RadarRecordingSession:
     ) -> bool:
         recorder = self.recorders.get(channel)
         return recorder.submit(points, recorded_at, frame_type) if recorder else False
+
+    def add_camera_snapshot(
+        self,
+        channel: int,
+        filename: str,
+        recorded_at: datetime | str,
+    ) -> bool:
+        recorder = self.recorders.get(channel)
+        if recorder is None:
+            return False
+        recorder.add_camera_snapshot(filename, recorded_at)
+        return True
 
     def poll_error(self) -> Exception | None:
         for recorder in self.recorders.values():
