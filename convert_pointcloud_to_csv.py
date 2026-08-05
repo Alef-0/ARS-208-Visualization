@@ -72,16 +72,16 @@ CLUSTER_INVALID_STATE = {
     0x05: "reserved",
     0x06: "invalid_high_mirror_probability",
     0x07: "invalid_outside_sensor_field_of_view",
-    0x08: "valid_high_artefact_probability",
-    0x09: "valid_suspicious_angle",
-    0x0A: "valid_low_relevance",
-    0x0B: "valid_high_mirror_probability",
-    0x0C: "valid_outside_sensor_field_of_view",
+    0x08: "valid_azimuth_correction_due_to_elevation",
+    0x09: "valid_high_child_probability",
+    0x0A: "valid_high_probability_of_50_degree_artefact",
+    0x0B: "valid_without_local_maximum",
+    0x0C: "valid_high_artefact_probability",
     0x0D: "reserved",
     0x0E: "invalid_harmonics",
-    0x0F: "valid_harmonics_probability",
-    0x10: "valid_multi_target_probability",
-    0x11: "invalid_multi_target_probability",
+    0x0F: "valid_above_95_m_in_near_range",
+    0x10: "valid_high_multi_target_probability",
+    0x11: "valid_suspicious_angle",
 }
 
 MEASUREMENT_STATE = {
@@ -89,10 +89,10 @@ MEASUREMENT_STATE = {
     1: "new",
     2: "measured",
     3: "predicted",
-    4: "deleted_for",
+    4: "deleted_for_merge",
     5: "new_from_merge",
     6: "reserved",
-    7: "invalid",
+    7: "reserved",
 }
 
 PROBABILITY_OF_EXISTENCE = {
@@ -110,11 +110,11 @@ OBJECT_CLASS = {
     0: "point",
     1: "car",
     2: "truck",
-    3: "reserved_01",
+    3: "not_in_use",
     4: "motorcycle",
     5: "bicycle",
     6: "wide",
-    7: "reserved_02",
+    7: "reserved",
 }
 
 COLLISION_DETECTION_REGIONS = {
