@@ -265,7 +265,12 @@ class Configurations:
                     expand_x=True,
                 ),
                 sg.FolderBrowse("SELECT", key="record_browse", target="record_folder"),
+            ],
+            [
                 *radar_choices,
+                sg.Push(),
+                sg.Text("IDLE", key="record_status", justification="center"),
+                sg.Push(),
                 sg.Button(
                     "START RECORDING",
                     key="record_toggle",
@@ -273,19 +278,22 @@ class Configurations:
                     disabled=True,
                 ),
             ],
-            [sg.Text("IDLE", key="record_status", expand_x=True, justification="center")],
             [sg.HorizontalSeparator()],
             [
                 sg.Text("Playback folder"),
                 sg.Input(default_text=str(Path.cwd()), key="playback_folder", expand_x=True),
                 sg.FolderBrowse("SELECT", key="playback_browse", target="playback_folder"),
+            ],
+            [
+                sg.Push(),
+                sg.Text("IDLE", key="playback_status", justification="center"),
+                sg.Push(),
                 sg.Button(
                     "PLAY RECORDING",
                     key="playback_toggle",
                     button_color=("white", "green"),
                 ),
             ],
-            [sg.Text("IDLE", key="playback_status", expand_x=True, justification="center")],
         ]
 
     def create_radar_control(self):
