@@ -249,37 +249,42 @@ class Configurations:
 
     @staticmethod
     def _create_record_layout():
-        radar_choices = [sg.Push(), sg.Text("Record radars:")]
+        recording_root = Path.cwd() / "recordings"
+        recording_root.mkdir(exist_ok=True)
+        radar_choices = [sg.Text("Radars:")]
         for channel, letter in ((1, "A"), (2, "B"), (3, "C")):
-            radar_choices.append(sg.Checkbox(letter, key=f"record_radar_{channel}", default=True))
-        radar_choices.append(sg.Push())
+            radar_choices.append(
+                sg.Checkbox(letter, key=f"record_radar_{channel}", default=True)
+            )
         return [
             [
                 sg.Text("Destination folder"),
-                sg.Input(default_text=str(Path.cwd()), key="record_folder", expand_x=True),
+                sg.Input(
+                    default_text=str(recording_root),
+                    key="record_folder",
+                    expand_x=True,
+                ),
                 sg.FolderBrowse("SELECT", key="record_browse", target="record_folder"),
+                *radar_choices,
+                sg.Button(
+                    "START RECORDING",
+                    key="record_toggle",
+                    button_color=("white", "green"),
+                    disabled=True,
+                ),
             ],
-            radar_choices,
-            [sg.Button(
-                "START RECORDING",
-                key="record_toggle",
-                expand_x=True,
-                button_color=("white", "green"),
-                disabled=True,
-            )],
             [sg.Text("IDLE", key="record_status", expand_x=True, justification="center")],
             [sg.HorizontalSeparator()],
             [
                 sg.Text("Playback folder"),
                 sg.Input(default_text=str(Path.cwd()), key="playback_folder", expand_x=True),
                 sg.FolderBrowse("SELECT", key="playback_browse", target="playback_folder"),
+                sg.Button(
+                    "PLAY RECORDING",
+                    key="playback_toggle",
+                    button_color=("white", "green"),
+                ),
             ],
-            [sg.Button(
-                "PLAY RECORDING",
-                key="playback_toggle",
-                expand_x=True,
-                button_color=("white", "green"),
-            )],
             [sg.Text("IDLE", key="playback_status", expand_x=True, justification="center")],
         ]
 
