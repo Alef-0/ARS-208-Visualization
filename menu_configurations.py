@@ -12,6 +12,7 @@ class Configurations(BaseConfigurations):
         self.snapshot_playback_paused = False
         self.playback_width = 1280
         self.playback_height = 720
+        self.point_cutoff = 15.0
         super().__init__()
 
     def create_radar_division(self):
@@ -184,11 +185,11 @@ class Configurations(BaseConfigurations):
         return layout
 
     @staticmethod
-    def _create_playback_image_layout():
+    def _create_general_configurations_layout():
         return [
             [
                 sg.Push(),
-                sg.Text("Playback image resolution"),
+                sg.Text("Playback / live camera resolution"),
                 sg.Input("1280", key="playback_width", size=(8, 1), justification="right"),
                 sg.Text("×"),
                 sg.Input("720", key="playback_height", size=(8, 1), justification="right"),
@@ -197,12 +198,28 @@ class Configurations(BaseConfigurations):
             ],
             [
                 sg.Text(
-                    "Default: 1280 × 720. This only resizes playback display images; recorded and snapshot images remain unchanged.",
+                    "This resizes only displayed camera images. Recording and snapshot images keep the source resolution.",
                     expand_x=True,
                     justification="center",
                 )
             ],
             [sg.Push(), sg.Text("1280 × 720", key="playback_resolution_status"), sg.Push()],
+            [sg.HorizontalSeparator()],
+            [
+                sg.Push(),
+                sg.Text("Displayed point cutoff (m)"),
+                sg.Input("15", key="point_cutoff", size=(8, 1), justification="right"),
+                sg.Button("APPLY", key="point_cutoff_apply"),
+                sg.Push(),
+            ],
+            [
+                sg.Text(
+                    "The radar graph remains 800 × 600 with a 15 m scale. A red arc marks the cutoff while it is inside the visible range.",
+                    expand_x=True,
+                    justification="center",
+                )
+            ],
+            [sg.Push(), sg.Text("15.0 m", key="point_cutoff_status"), sg.Push()],
         ]
 
     def create_radar_control(self):
@@ -210,7 +227,7 @@ class Configurations(BaseConfigurations):
             sg.Tab("Configurations", self.options),
             sg.Tab("Record", self._create_record_layout()),
             sg.Tab("Snapshots", self._create_snapshot_layout()),
-            sg.Tab("Playback Image", self._create_playback_image_layout()),
+            sg.Tab("General Configurations", self._create_general_configurations_layout()),
         ]]
         self.radar_control = sg.Frame(
             "Radar Control",
@@ -391,3 +408,7 @@ class Configurations(BaseConfigurations):
         self.playback_width = width
         self.playback_height = height
         self.window["playback_resolution_status"].update(f"{width} × {height}")
+
+    def change_point_cutoff(self, cutoff):
+        self.point_cutoff = cutoff
+        self.window["point_cutoff_status"].update(f"{cutoff:.1f} m")

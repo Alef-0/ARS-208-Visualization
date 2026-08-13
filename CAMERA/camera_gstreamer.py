@@ -17,6 +17,8 @@ from gi.repository import GLib, Gst
 Gst.init(None)
 
 CAMERA_PIPELINE_LATENCY_MS = 250
+DEFAULT_DISPLAY_WIDTH = 1280
+DEFAULT_DISPLAY_HEIGHT = 720
 MAX_PIPELINE_ATTEMPTS = 3
 FIRST_FRAME_TIMEOUT_SECONDS = 5.0
 PIPELINE_RETRY_DELAY_SECONDS = 0.5
@@ -40,6 +42,8 @@ class GStreamerPipeline:
         self.attempt_started = 0.0
         self.exit_reason = _RESULT_FAILURE
         self.channel_changed = False
+        self.display_width = DEFAULT_DISPLAY_WIDTH
+        self.display_height = DEFAULT_DISPLAY_HEIGHT
         self.snapshot_recorder = CameraSnapshotRecorder(self._report_snapshot)
         self._manual_snapshot_lock = threading.Lock()
         self._pending_manual_snapshot: dict | None = None
@@ -75,6 +79,31 @@ class GStreamerPipeline:
         except Exception as error:
             self._put_status("camera_recording_error", str(error))
             self._put_status("camera_recording_state", {"active": False})
+
+    def _set_display_resolution(self, value):
+        try:
+            width = int(value.get("width", self.display_width))
+            height = int(value.get("height", self.display_height))
+        except (AttributeError, TypeError, ValueError):
+            self._put_status(
+                "playback_resolution_error",
+                "Playback width and height must be positive integers",
+            )
+            return False
+        if width <= 0 or height <= 0:
+            self._put_status(
+                "playback_resolution_error",
+                "Playback width and height must be positive integers",
+            )
+            return False
+        if (width, height) == (self.display_width, self.display_height):
+            return False
+        self.display_width = width
+        self.display_height = height
+        if self.connected:
+            self.exit_reason = _RESULT_RESTART
+            return True
+        return False
 
     def _fail_manual_snapshot(self, message):
         with self._manual_snapshot_lock:
@@ -225,7 +254,7 @@ class GStreamerPipeline:
             self.exit_reason = _RESULT_FAILURE
             if message.type == Gst.MessageType.ERROR:
                 error, debug = message.parse_error()
-                print(f"GStreamer error: {error}; {debug}")
+                print(f"[DEBUG][CAMERA] GStreamer error: {error}; {debug}")
             if self.main_loop:
                 self.main_loop.quit()
 
@@ -267,6 +296,8 @@ class GStreamerPipeline:
                     self._stop_snapshot_recording()
                 elif event == "snapshot_capture":
                     restart = self._queue_manual_snapshot(value) or restart
+                elif event == "playback_resolution":
+                    restart = self._set_display_resolution(value) or restart
         except (EOFError, OSError):
             self.shutdown_event.set()
             self.connected = False
@@ -296,7 +327,7 @@ class GStreamerPipeline:
         if time.monotonic() - self.attempt_started < FIRST_FRAME_TIMEOUT_SECONDS:
             return GLib.SOURCE_CONTINUE
         print(
-            f"Camera channel {self.channel} did not produce a frame within "
+            f"[DEBUG][CAMERA] Camera channel {self.channel} did not produce a frame within "
             f"{FIRST_FRAME_TIMEOUT_SECONDS:.1f} seconds"
         )
         self.exit_reason = _RESULT_FAILURE
@@ -330,7 +361,7 @@ class GStreamerPipeline:
             f"rtspsrc name=source latency={CAMERA_PIPELINE_LATENCY_MS} protocols=tcp ! "
             "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! tee name=video "
             "video. ! queue leaky=downstream max-size-buffers=1 ! videoscale ! "
-            "video/x-raw,format=BGR,width=800,height=600 ! "
+            f"video/x-raw,format=BGR,width={self.display_width},height={self.display_height} ! "
             "appsink name=display_sink emit-signals=true sync=false max-buffers=1 drop=true "
             "video. ! queue leaky=downstream max-size-buffers=1 ! video/x-raw,format=BGR ! "
             "appsink name=capture_sink emit-signals=true sync=false max-buffers=1 drop=true"
@@ -361,13 +392,13 @@ class GStreamerPipeline:
             ]
 
             if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
-                print(f"GStreamer could not start camera channel {self.channel}")
+                print(f"[DEBUG][CAMERA] GStreamer could not start camera channel {self.channel}")
                 return self.exit_reason, self.first_frame_received
 
             self.main_loop.run()
             return self.exit_reason, self.first_frame_received
         except Exception as error:
-            print(f"Camera pipeline failure: {error}")
+            print(f"[DEBUG][CAMERA] Camera pipeline failure: {error}")
             return _RESULT_FAILURE, self.first_frame_received
         finally:
             self._remove_sources()
@@ -409,7 +440,7 @@ def gstreamer_main(connection, pool, shutdown_event):
             failed_attempts += 1
             if failed_attempts >= MAX_PIPELINE_ATTEMPTS:
                 print(
-                    f"Camera channel {pipeline.channel} failed after "
+                    f"[DEBUG][CAMERA] Camera channel {pipeline.channel} failed after "
                     f"{MAX_PIPELINE_ATTEMPTS} attempts"
                 )
                 pipeline.connected = False

@@ -81,7 +81,7 @@ class PlaybackController:
         self.pool = pool
         self.shutdown_event = shutdown_event
         self.filters = Filter_graph(initial_values)
-        self.graph = Graph_radar()
+        self.graph = Graph_radar(initial_values.get("point_cutoff", 15.0))
         self.stop_requested = False
         self.width = DEFAULT_PLAYBACK_WIDTH
         self.height = DEFAULT_PLAYBACK_HEIGHT
@@ -101,6 +101,8 @@ class PlaybackController:
                 self._play(value)
             elif event == "playback_resolution":
                 self._set_resolution(value)
+            elif event == "point_cutoff":
+                self.graph.set_distance_cutoff(value.get("distance", 15.0))
             elif isinstance(event, str) and event.startswith("filter"):
                 self.filters.update_values(event, value)
         self._close_windows()
@@ -132,7 +134,7 @@ class PlaybackController:
                     x, y, colors = self.filters.filter_point_sequence(reader.clusters)
                 else:
                     x, y, colors = self.filters.filter_object_sequence(reader.objects)
-                self.graph.show_points(x, y, colors)
+                self.graph.show_points(x, y, colors, self.filters.last_points)
                 if entry.camera_frame and entry.camera_frame.is_file():
                     image = cv.imread(str(entry.camera_frame))
                     if image is not None:
@@ -167,6 +169,8 @@ class PlaybackController:
             self.stop_requested = True
         elif event == "playback_resolution":
             self._set_resolution(value)
+        elif event == "point_cutoff":
+            self.graph.set_distance_cutoff(value.get("distance", 15.0))
         elif isinstance(event, str) and event.startswith("filter"):
             self.filters.update_values(event, value)
 

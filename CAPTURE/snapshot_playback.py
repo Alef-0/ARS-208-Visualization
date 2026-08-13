@@ -64,7 +64,7 @@ class SnapshotPlaybackController:
         self.pool = pool
         self.shutdown_event = shutdown_event
         self.filters = Filter_graph(initial_values)
-        self.graph = Graph_radar()
+        self.graph = Graph_radar(initial_values.get("point_cutoff", 15.0))
         self.active = False
         self.paused = False
         self.stop_requested = False
@@ -90,6 +90,8 @@ class SnapshotPlaybackController:
                 self._play(value)
             elif event == "playback_resolution":
                 self._set_resolution(value)
+            elif event == "point_cutoff":
+                self.graph.set_distance_cutoff(value.get("distance", 15.0))
             elif isinstance(event, str) and event.startswith("filter"):
                 self.filters.update_values(event, value)
         self._close_windows()
@@ -208,6 +210,13 @@ class SnapshotPlaybackController:
                 self._set_resolution(value)
             except Exception as error:
                 _put_status(self.pool, "playback_resolution_error", str(error))
+        elif event == "point_cutoff":
+            try:
+                self.graph.set_distance_cutoff(value.get("distance", 15.0))
+                if self.active and self.entries:
+                    self._render()
+            except Exception as error:
+                _put_status(self.pool, "point_cutoff_error", str(error))
         elif isinstance(event, str) and event.startswith("filter"):
             self.filters.update_values(event, value)
             self._render()
@@ -220,7 +229,7 @@ class SnapshotPlaybackController:
             x, y, colors = self.filters.filter_point_sequence(reader.clusters)
         else:
             x, y, colors = self.filters.filter_object_sequence(reader.objects)
-        self.graph.show_points(x, y, colors)
+        self.graph.show_points(x, y, colors, self.filters.last_points)
 
         image = cv.imread(str(entry["image"]))
         if image is None:
