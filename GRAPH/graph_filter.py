@@ -1,14 +1,14 @@
 import math
 from typing import Iterable
 
-from connection.connection_packages import (
+from CONNECTION.connection_packages import (
     Clusters_messages,
     MISSING_QUALITY,
     Objects_messages,
     RadarObject,
     RadarPoint,
 )
-from interface.filter_schema import DYNAMIC_COLORS_BGR, PDH_KEY, RCS_KEY, parse_filter_key
+from INTERFACE.filter_schema import DYNAMIC_COLORS_BGR, PDH_KEY, RCS_KEY, parse_filter_key
 
 
 UNKNOWN_DYNAMIC_COLOR_BGR = (128, 128, 128)

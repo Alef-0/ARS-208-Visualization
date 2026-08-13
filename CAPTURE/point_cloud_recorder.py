@@ -1,5 +1,5 @@
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import queue
@@ -9,7 +9,7 @@ from typing import Callable, Iterable
 
 import numpy as np
 
-from connection.connection_packages import MISSING_QUALITY, RadarObject, RadarPoint
+from CONNECTION.connection_packages import MISSING_QUALITY, RadarObject, RadarPoint
 
 try:
     from pypcd4 import PointCloud
@@ -100,6 +100,7 @@ OBJECT_PCD_TYPES = LEGACY_OBJECT_PCD_TYPES + (
 PCD_FIELDS = CLUSTER_PCD_FIELDS
 PCD_TYPES = CLUSTER_PCD_TYPES
 RADAR_LETTERS = {1: "A", 2: "B", 3: "C"}
+CAMERA_DELAY_SECONDS = 0.250
 METADATA_FLUSH_SECONDS = 1.0
 RECORDING_METADATA_NAME = "recording.json"
 TIMESTAMPS_METADATA_NAME = "timestamps.json"
@@ -120,6 +121,71 @@ def _timestamp(value: datetime | str) -> str:
     if isinstance(value, datetime):
         return value.isoformat(timespec="microseconds")
     return str(value)
+
+
+def _datetime(value: datetime | str) -> datetime:
+    return value if isinstance(value, datetime) else datetime.fromisoformat(value)
+
+
+def save_point_cloud(
+    path: Path,
+    points: tuple[RadarPoint | RadarObject, ...],
+    frame_type: str,
+) -> None:
+    if PointCloud is None:
+        raise RuntimeError(
+            "pypcd4 is required to record point clouds; install it with "
+            "python -m pip install pypcd4"
+        )
+
+    if frame_type == "cluster":
+        fields, types = CLUSTER_PCD_FIELDS, CLUSTER_PCD_TYPES
+        values = np.empty((len(points), len(fields)), dtype=object)
+        for row, point in enumerate(points):
+            values[row] = (
+                point.cluster_id,
+                point.dist_long,
+                point.dist_latitude,
+                _float_or_nan(point.velocity_longitude),
+                _float_or_nan(point.velocity_latitude),
+                _int_or_missing(point.dynamic_property),
+                _float_or_nan(point.rcs),
+                _int_or_missing(point.pdh),
+                _int_or_missing(point.ambiguity_state),
+                _int_or_missing(point.invalid_flag),
+            )
+    elif frame_type == "object":
+        fields, types = OBJECT_PCD_FIELDS, OBJECT_PCD_TYPES
+        values = np.empty((len(points), len(fields)), dtype=object)
+        for row, obj in enumerate(points):
+            values[row] = (
+                obj.object_id,
+                obj.dist_long,
+                obj.dist_latitude,
+                _float_or_nan(obj.velocity_longitude),
+                _float_or_nan(obj.velocity_latitude),
+                _int_or_missing(obj.dynamic_property),
+                _float_or_nan(obj.rcs),
+                _float_or_nan(obj.dist_long_rms),
+                _float_or_nan(obj.velocity_longitude_rms),
+                _float_or_nan(obj.dist_latitude_rms),
+                _float_or_nan(obj.velocity_latitude_rms),
+                _float_or_nan(obj.acceleration_latitude_rms),
+                _float_or_nan(obj.acceleration_longitude_rms),
+                _float_or_nan(obj.orientation_rms),
+                _int_or_missing(obj.measurement_state),
+                _int_or_missing(obj.probability_of_existence),
+                _float_or_nan(obj.acceleration_longitude),
+                _float_or_nan(obj.acceleration_latitude),
+                _int_or_missing(obj.object_class),
+                _float_or_nan(obj.orientation_angle),
+                _float_or_nan(obj.length),
+                _float_or_nan(obj.width),
+                _int_or_missing(obj.collision_detection_regions),
+            )
+    else:
+        raise ValueError(f"Unsupported radar frame type: {frame_type}")
+    PointCloud.from_points(values, fields, types).save(str(path))
 
 
 class PointCloudRecorder:
@@ -184,18 +250,17 @@ class PointCloudRecorder:
             return False
 
     def add_camera_snapshot(self, filename: str, recorded_at: datetime | str) -> None:
+        camera_time = _datetime(recorded_at)
+        target_time = camera_time - timedelta(seconds=CAMERA_DELAY_SECONDS)
         snapshot = {
             "camera_frame": Path(filename).name,
-            "camera_recorded_at": _timestamp(recorded_at),
+            "camera_recorded_at": _timestamp(camera_time),
+            "target_recorded_at": _timestamp(target_time),
         }
         with self._metadata_lock:
-            for record in reversed(self._records):
-                if record["camera_frame"] is None:
-                    record.update(snapshot)
-                    self._metadata_dirty = True
-                    self._flush_metadata_locked()
-                    return
             self._pending_camera_frames.append(snapshot)
+            self._match_camera_frames_locked()
+            self._flush_metadata_locked()
 
     def stop(self) -> None:
         while self._thread.is_alive():
@@ -205,9 +270,40 @@ class PointCloudRecorder:
             except queue.Full:
                 continue
         self._thread.join()
+        with self._metadata_lock:
+            self._match_camera_frames_locked(force=True)
         self._flush_metadata(force=True)
         if self.error is not None:
             raise self.error
+
+    def _match_camera_frames_locked(self, *, force: bool = False) -> None:
+        while self._pending_camera_frames:
+            available = [record for record in self._records if record["camera_frame"] is None]
+            if not available:
+                return
+
+            snapshot = self._pending_camera_frames[0]
+            target = _datetime(snapshot["target_recorded_at"])
+            newest = _datetime(available[-1]["recorded_at"])
+            if not force and newest < target:
+                return
+
+            record = min(
+                available,
+                key=lambda item: abs((_datetime(item["recorded_at"]) - target).total_seconds()),
+            )
+            record_time = _datetime(record["recorded_at"])
+            record.update({
+                "camera_frame": snapshot["camera_frame"],
+                "camera_recorded_at": snapshot["camera_recorded_at"],
+                "camera_delay_ms": int(CAMERA_DELAY_SECONDS * 1000),
+                "synchronization_error_ms": round(
+                    (record_time - target).total_seconds() * 1000.0,
+                    3,
+                ),
+            })
+            self._pending_camera_frames.popleft()
+            self._metadata_dirty = True
 
     def _write_loop(self) -> None:
         try:
@@ -220,23 +316,21 @@ class PointCloudRecorder:
                     points, recorded_at, frame_type = item
                     frame_number = self.frames_written + 1
                     path = self.folder / f"frame_{frame_number:06d}.pcd"
-                    self._save(path, points, frame_type)
+                    save_point_cloud(path, points, frame_type)
                     self.frames_written = frame_number
                     with self._metadata_lock:
-                        camera = (
-                            self._pending_camera_frames.popleft()
-                            if self._pending_camera_frames
-                            else None
-                        )
                         self._timestamps[path.name] = recorded_at
                         self._records.append({
                             "point_cloud": path.name,
                             "recorded_at": recorded_at,
                             "frame_type": frame_type,
-                            "camera_frame": camera["camera_frame"] if camera else None,
-                            "camera_recorded_at": camera["camera_recorded_at"] if camera else None,
+                            "camera_frame": None,
+                            "camera_recorded_at": None,
+                            "camera_delay_ms": None,
+                            "synchronization_error_ms": None,
                         })
                         self._metadata_dirty = True
+                        self._match_camera_frames_locked()
                         self._flush_metadata_locked()
                     if self.progress_callback:
                         self.progress_callback(self.channel, self.frames_written)
@@ -286,54 +380,7 @@ class PointCloudRecorder:
         points: tuple[RadarPoint | RadarObject, ...],
         frame_type: str,
     ) -> None:
-        if frame_type == "cluster":
-            fields, types = CLUSTER_PCD_FIELDS, CLUSTER_PCD_TYPES
-            values = np.empty((len(points), len(fields)), dtype=object)
-            for row, point in enumerate(points):
-                values[row] = (
-                    point.cluster_id,
-                    point.dist_long,
-                    point.dist_latitude,
-                    _float_or_nan(point.velocity_longitude),
-                    _float_or_nan(point.velocity_latitude),
-                    _int_or_missing(point.dynamic_property),
-                    _float_or_nan(point.rcs),
-                    _int_or_missing(point.pdh),
-                    _int_or_missing(point.ambiguity_state),
-                    _int_or_missing(point.invalid_flag),
-                )
-        elif frame_type == "object":
-            fields, types = OBJECT_PCD_FIELDS, OBJECT_PCD_TYPES
-            values = np.empty((len(points), len(fields)), dtype=object)
-            for row, obj in enumerate(points):
-                values[row] = (
-                    obj.object_id,
-                    obj.dist_long,
-                    obj.dist_latitude,
-                    _float_or_nan(obj.velocity_longitude),
-                    _float_or_nan(obj.velocity_latitude),
-                    _int_or_missing(obj.dynamic_property),
-                    _float_or_nan(obj.rcs),
-                    _float_or_nan(obj.dist_long_rms),
-                    _float_or_nan(obj.velocity_longitude_rms),
-                    _float_or_nan(obj.dist_latitude_rms),
-                    _float_or_nan(obj.velocity_latitude_rms),
-                    _float_or_nan(obj.acceleration_latitude_rms),
-                    _float_or_nan(obj.acceleration_longitude_rms),
-                    _float_or_nan(obj.orientation_rms),
-                    _int_or_missing(obj.measurement_state),
-                    _int_or_missing(obj.probability_of_existence),
-                    _float_or_nan(obj.acceleration_longitude),
-                    _float_or_nan(obj.acceleration_latitude),
-                    _int_or_missing(obj.object_class),
-                    _float_or_nan(obj.orientation_angle),
-                    _float_or_nan(obj.length),
-                    _float_or_nan(obj.width),
-                    _int_or_missing(obj.collision_detection_regions),
-                )
-        else:
-            raise ValueError(f"Unsupported radar frame type: {frame_type}")
-        PointCloud.from_points(values, fields, types).save(str(path))
+        save_point_cloud(path, points, frame_type)
 
 
 class RadarRecordingSession:

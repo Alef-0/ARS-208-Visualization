@@ -1,11 +1,11 @@
-from connection.cluster_messages import (
+from CONNECTION.cluster_messages import (
     Clusters_messages,
     RadarPoint,
     read_701_cluster_list,
     read_702_quality_info,
 )
-from connection.message_common import MISSING_QUALITY, check_payload
-from connection.object_messages import (
+from CONNECTION.message_common import MISSING_QUALITY, check_payload
+from CONNECTION.object_messages import (
     KINEMATIC_RMS_VALUES,
     OBJECT_CLASSES,
     ORIENTATION_RMS_VALUES,

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from connection.message_common import check_payload
+from CONNECTION.message_common import check_payload
 
 
 KINEMATIC_RMS_VALUES = (

@@ -3,8 +3,8 @@ from typing import Iterator
 
 import numpy as np
 
-from connection.connection_packages import MISSING_QUALITY, RadarObject, RadarPoint
-from recording.point_cloud_recorder import (
+from CONNECTION.connection_packages import MISSING_QUALITY, RadarObject, RadarPoint
+from CAPTURE.point_cloud_recorder import (
     CLUSTER_PCD_FIELDS,
     LEGACY_OBJECT_PCD_FIELDS,
     OBJECT_PCD_FIELDS,
@@ -12,7 +12,7 @@ from recording.point_cloud_recorder import (
 
 try:
     from pypcd4 import PointCloud
-except ImportError:  # Reported when a recording is opened.
+except ImportError:
     PointCloud = None
 
 
@@ -39,7 +39,6 @@ class PointCloudReader:
         self.path = Path(path).expanduser()
         if not self.path.is_file():
             raise FileNotFoundError(self.path)
-
         cloud = PointCloud.from_path(str(self.path))
         available_fields = set(cloud.fields)
         if set(OBJECT_PCD_FIELDS).issubset(available_fields):
@@ -76,16 +75,10 @@ class PointCloudReader:
         values = cloud.numpy(CLUSTER_PCD_FIELDS)
         return tuple(
             RadarPoint(
-                cluster_id=int(row[0]),
-                dist_long=float(row[1]),
-                dist_latitude=float(row[2]),
-                velocity_longitude=_optional_float(row[3]),
-                velocity_latitude=_optional_float(row[4]),
-                dynamic_property=_optional_int(row[5]),
-                rcs=_optional_float(row[6]),
-                pdh=int(row[7]),
-                ambiguity_state=int(row[8]),
-                invalid_flag=int(row[9]),
+                cluster_id=int(row[0]), dist_long=float(row[1]), dist_latitude=float(row[2]),
+                velocity_longitude=_optional_float(row[3]), velocity_latitude=_optional_float(row[4]),
+                dynamic_property=_optional_int(row[5]), rcs=_optional_float(row[6]),
+                pdh=int(row[7]), ambiguity_state=int(row[8]), invalid_flag=int(row[9]),
             )
             for row in values
         )
@@ -113,33 +106,12 @@ class PointCloudReader:
                 orientation_rms=_optional_float(values["orientation_rms"]),
                 measurement_state=_optional_int(values["measurement_state"]),
                 probability_of_existence=_optional_int(values["probability_of_existence"]),
-                acceleration_longitude=(
-                    _optional_float(values["acceleration_longitude"])
-                    if "acceleration_longitude" in values else None
-                ),
-                acceleration_latitude=(
-                    _optional_float(values["acceleration_latitude"])
-                    if "acceleration_latitude" in values else None
-                ),
-                object_class=(
-                    _optional_int(values["object_class"])
-                    if "object_class" in values else None
-                ),
-                orientation_angle=(
-                    _optional_float(values["orientation_angle"])
-                    if "orientation_angle" in values else None
-                ),
-                length=(
-                    _optional_float(values["length"])
-                    if "length" in values else None
-                ),
-                width=(
-                    _optional_float(values["width"])
-                    if "width" in values else None
-                ),
-                collision_detection_regions=(
-                    _optional_int(values["collision_detection_regions"])
-                    if "collision_detection_regions" in values else None
-                ),
+                acceleration_longitude=_optional_float(values["acceleration_longitude"]) if "acceleration_longitude" in values else None,
+                acceleration_latitude=_optional_float(values["acceleration_latitude"]) if "acceleration_latitude" in values else None,
+                object_class=_optional_int(values["object_class"]) if "object_class" in values else None,
+                orientation_angle=_optional_float(values["orientation_angle"]) if "orientation_angle" in values else None,
+                length=_optional_float(values["length"]) if "length" in values else None,
+                width=_optional_float(values["width"]) if "width" in values else None,
+                collision_detection_regions=_optional_int(values["collision_detection_regions"]) if "collision_detection_regions" in values else None,
             ))
         return tuple(objects)

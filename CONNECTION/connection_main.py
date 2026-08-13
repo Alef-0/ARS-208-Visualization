@@ -1,20 +1,22 @@
-from datetime import datetime
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 import queue
 import signal
 
 import cv2 as cv
 
-from connection.connection_communication import Can_Connection
-from connection.cluster_messages import (
+from CONNECTION.connection_communication import Can_Connection
+from CONNECTION.cluster_messages import (
     Clusters_messages,
     read_701_cluster_list as r701,
     read_702_quality_info as r702,
 )
-from connection.connection_packages import (
+from CONNECTION.connection_packages import (
     create_200_radar_configuration as c200,
     read_201_radar_state_extended as r201,
 )
-from connection.object_messages import (
+from CONNECTION.object_messages import (
     Objects_messages,
     read_60a_object_status as r60a,
     read_60b_object_general as r60b,
@@ -22,18 +24,28 @@ from connection.object_messages import (
     read_60d_object_extended as r60d,
     read_60e_object_warning as r60e,
 )
-from graph.graph_draw import Graph_radar
-from graph.graph_filter import Filter_graph
-from recording import RadarRecordingSession
+from GRAPH.graph_draw import Graph_radar
+from GRAPH.graph_filter import Filter_graph
+from CAPTURE import ManualSnapshotWriter, RadarRecordingSession
+from CAPTURE.point_cloud_recorder import CAMERA_DELAY_SECONDS
 
 RADAR_CHANNELS = (1, 2, 3)
 STATUS_FRAME_TYPES = {0x600: "cluster", 0x60A: "object"}
+FRAME_HISTORY_SECONDS = 3.0
+MAX_SNAPSHOT_SYNC_ERROR_SECONDS = 0.5
+
+
+@dataclass(frozen=True)
+class RadarFrame:
+    recorded_at: datetime
+    frame_type: str
+    points: tuple
 
 
 def _put_status(pool, message, payload, *, critical=False):
     try:
         if critical:
-            pool.put((message, payload), timeout=0.2)
+            pool.put((message, payload), timeout=0.5)
         else:
             pool.put_nowait((message, payload))
     except queue.Full:
@@ -129,6 +141,7 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
     object_messages = {channel: Objects_messages() for channel in RADAR_CHANNELS}
     frame_types: dict[int, str] = {}
     frame_timestamps: dict[int, datetime] = {}
+    frame_history = {channel: deque() for channel in RADAR_CHANNELS}
     recording_ready: dict[int, bool] = {}
     received_message_ids: set[int] = set()
     graph = Graph_radar()
@@ -148,6 +161,13 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
     def frame_messages(channel, frame_type):
         return cluster_messages[channel] if frame_type == "cluster" else object_messages[channel]
 
+    def remember_frame(channel, frame):
+        history = frame_history[channel]
+        history.append(frame)
+        cutoff = frame.recorded_at - timedelta(seconds=FRAME_HISTORY_SECONDS)
+        while history and history[0].recorded_at < cutoff:
+            history.popleft()
+
     def begin_frame(channel, frame_type, recorded_at, status=None):
         previous_type = frame_types.get(channel)
         if previous_type is not None:
@@ -158,11 +178,19 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                 else:
                     x, y, colors = filters.filter_objects(previous_messages)
                 graph.show_points(x, y, colors)
+
+            points = previous_messages.snapshot()
+            frame = RadarFrame(
+                recorded_at=frame_timestamps[channel],
+                frame_type=previous_type,
+                points=points,
+            )
+            remember_frame(channel, frame)
             if recording_ready.get(channel, False):
                 recording.submit(
                     channel,
-                    previous_messages.snapshot(),
-                    frame_timestamps[channel],
+                    points,
+                    frame.recorded_at,
                     frame_type=previous_type,
                 )
             previous_messages.clear()
@@ -175,6 +203,54 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
         frame_timestamps[channel] = recorded_at
         if channel in recording.channels:
             recording_ready[channel] = True
+
+    def save_manual_snapshot(values):
+        request_id = values.get("request_id")
+        try:
+            if not connection.connected:
+                raise RuntimeError("Connect the radar before taking a snapshot")
+
+            channel = int(values.get("channel", 0))
+            if channel not in RADAR_CHANNELS:
+                raise ValueError(f"Unsupported radar group: {channel}")
+
+            camera_recorded_at = datetime.fromisoformat(values["captured_at"])
+            target_time = camera_recorded_at - timedelta(seconds=CAMERA_DELAY_SECONDS)
+            history = frame_history[channel]
+            if not history:
+                raise RuntimeError(
+                    "No complete radar frame is available for the selected group"
+                )
+
+            frame = min(
+                history,
+                key=lambda item: abs(
+                    (item.recorded_at - target_time).total_seconds()
+                ),
+            )
+            sync_error = abs((frame.recorded_at - target_time).total_seconds())
+            if sync_error > MAX_SNAPSHOT_SYNC_ERROR_SECONDS:
+                raise RuntimeError(
+                    "No radar frame was close enough to the delayed camera frame "
+                    f"({sync_error * 1000:.1f} ms difference)"
+                )
+
+            result = ManualSnapshotWriter(values["folder"]).save(
+                frame.points,
+                frame.recorded_at,
+                frame.frame_type,
+                values["image_bytes"],
+                camera_recorded_at,
+            )
+            result["request_id"] = request_id
+            _put_status(pool, "snapshot_saved", result, critical=True)
+        except Exception as error:
+            _put_status(
+                pool,
+                "snapshot_error",
+                {"request_id": request_id, "message": str(error)},
+                critical=True,
+            )
 
     try:
         while not shutdown_event.is_set():
@@ -228,6 +304,8 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                             )
                     elif event == "record_stop":
                         _stop_recording(recording, pool, recording_ready)
+                    elif event == "snapshot_capture":
+                        save_manual_snapshot(values)
                     elif isinstance(event, str) and event.startswith("filter"):
                         filters.update_values(event, values)
             except (EOFError, OSError):

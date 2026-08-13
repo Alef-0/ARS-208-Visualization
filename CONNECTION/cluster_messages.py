@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from connection.message_common import MISSING_QUALITY, check_payload
+from CONNECTION.message_common import MISSING_QUALITY, check_payload
 
 
 @dataclass

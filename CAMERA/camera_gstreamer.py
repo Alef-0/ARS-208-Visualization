@@ -1,19 +1,22 @@
+from datetime import datetime
 import queue
 import signal
 import socket
+import threading
 import time
 
 import cv2 as cv
 import gi
 import numpy as np
 
-from recording import CameraSnapshotRecorder
+from CAPTURE import CameraSnapshotRecorder
 
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst
 
 Gst.init(None)
 
+CAMERA_PIPELINE_LATENCY_MS = 250
 MAX_PIPELINE_ATTEMPTS = 3
 FIRST_FRAME_TIMEOUT_SECONDS = 5.0
 PIPELINE_RETRY_DELAY_SECONDS = 0.5
@@ -38,14 +41,16 @@ class GStreamerPipeline:
         self.exit_reason = _RESULT_FAILURE
         self.channel_changed = False
         self.snapshot_recorder = CameraSnapshotRecorder(self._report_snapshot)
+        self._manual_snapshot_lock = threading.Lock()
+        self._pending_manual_snapshot: dict | None = None
 
     @staticmethod
     def create_url(channel):
         return f"rtsp://admin:l1v3user5@192.168.1.108:554/cam/realmonitor?channel={channel}&subtype=0"
 
-    def _put_status(self, message, payload):
+    def _put_status(self, message, payload, *, timeout=0.2):
         try:
-            self.pool.put((message, payload), timeout=0.2)
+            self.pool.put((message, payload), timeout=timeout)
         except queue.Full:
             pass
 
@@ -71,31 +76,148 @@ class GStreamerPipeline:
             self._put_status("camera_recording_error", str(error))
             self._put_status("camera_recording_state", {"active": False})
 
-    def on_new_sample(self, sink):
-        sample = sink.emit("pull-sample")
-        if sample is None:
-            return Gst.FlowReturn.ERROR
+    def _fail_manual_snapshot(self, message):
+        with self._manual_snapshot_lock:
+            request = self._pending_manual_snapshot
+            self._pending_manual_snapshot = None
+        if request is None:
+            return
+        self._put_status(
+            "manual_snapshot_error",
+            {
+                "request_id": request.get("request_id"),
+                "message": message,
+            },
+        )
+
+    def _queue_manual_snapshot(self, value):
+        if not self.connected:
+            self._put_status(
+                "manual_snapshot_error",
+                {
+                    "request_id": value.get("request_id"),
+                    "message": "Connect the camera before taking a snapshot",
+                },
+            )
+            return False
+
+        channel = int(value.get("channel", 0))
+        if channel not in (1, 2, 3):
+            self._put_status(
+                "manual_snapshot_error",
+                {
+                    "request_id": value.get("request_id"),
+                    "message": f"Unsupported camera group: {channel}",
+                },
+            )
+            return False
+
+        request = dict(value)
+        request["restore_channel"] = self.channel
+        with self._manual_snapshot_lock:
+            if self._pending_manual_snapshot is not None:
+                self._put_status(
+                    "manual_snapshot_error",
+                    {
+                        "request_id": value.get("request_id"),
+                        "message": "A camera snapshot is already pending",
+                    },
+                )
+                return False
+            self._pending_manual_snapshot = request
+
+        if channel != self.channel:
+            self.channel = channel
+            self.channel_changed = True
+            self.exit_reason = _RESULT_RESTART
+            return True
+        return False
+
+    def _restore_channel_after_snapshot(self, channel):
+        if channel != self.channel:
+            self.channel = channel
+            self.channel_changed = True
+            self.exit_reason = _RESULT_RESTART
+            if self.main_loop:
+                self.main_loop.quit()
+        return GLib.SOURCE_REMOVE
+
+    def _emit_manual_snapshot(self, frame, captured_at):
+        with self._manual_snapshot_lock:
+            request = self._pending_manual_snapshot
+            if request is None or int(request["channel"]) != self.channel:
+                return
+            self._pending_manual_snapshot = None
+
+        success, encoded = cv.imencode(".jpg", frame)
+        if not success:
+            self._put_status(
+                "manual_snapshot_error",
+                {
+                    "request_id": request.get("request_id"),
+                    "message": "Could not encode the camera snapshot",
+                },
+            )
+            return
+
+        self._put_status(
+            "manual_snapshot_frame",
+            {
+                "request_id": request.get("request_id"),
+                "folder": request.get("folder"),
+                "channel": int(request["channel"]),
+                "captured_at": captured_at.isoformat(timespec="microseconds"),
+                "image_bytes": encoded.tobytes(),
+            },
+            timeout=1.0,
+        )
+
+        restore_channel = int(request.get("restore_channel", self.channel))
+        if restore_channel != self.channel:
+            GLib.idle_add(self._restore_channel_after_snapshot, restore_channel)
+
+    @staticmethod
+    def _sample_to_frame(sample):
         buffer = sample.get_buffer()
         success, map_info = buffer.map(Gst.MapFlags.READ)
         if not success:
-            return Gst.FlowReturn.ERROR
+            return None, None
         try:
             caps = sample.get_caps().get_structure(0)
             width = caps.get_value("width")
             height = caps.get_value("height")
             frame = np.frombuffer(map_info.data, dtype=np.uint8).reshape(height, width, 3).copy()
-            self.first_frame_received = True
-            try:
-                self.frames.put_nowait(frame)
-            except queue.Full:
-                try:
-                    self.frames.get_nowait()
-                except queue.Empty:
-                    pass
-                self.frames.put_nowait(frame)
-            self.snapshot_recorder.submit(frame)
+            return frame, datetime.now().astimezone()
         finally:
             buffer.unmap(map_info)
+
+    def on_new_display_sample(self, sink):
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.ERROR
+        frame, _ = self._sample_to_frame(sample)
+        if frame is None:
+            return Gst.FlowReturn.ERROR
+        try:
+            self.frames.put_nowait(frame)
+        except queue.Full:
+            try:
+                self.frames.get_nowait()
+            except queue.Empty:
+                pass
+            self.frames.put_nowait(frame)
+        return Gst.FlowReturn.OK
+
+    def on_new_capture_sample(self, sink):
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.ERROR
+        frame, captured_at = self._sample_to_frame(sample)
+        if frame is None or captured_at is None:
+            return Gst.FlowReturn.ERROR
+        self.first_frame_received = True
+        self.snapshot_recorder.submit(frame, captured_at=captured_at)
+        self._emit_manual_snapshot(frame, captured_at)
         return Gst.FlowReturn.OK
 
     def on_message(self, _bus, message):
@@ -114,6 +236,7 @@ class GStreamerPipeline:
                 event, value = self.communicate.recv()
                 if event == "STOP":
                     self._stop_snapshot_recording()
+                    self._fail_manual_snapshot("Camera process stopped before taking the snapshot")
                     self.shutdown_event.set()
                     self.connected = False
                     self.exit_reason = _RESULT_CLOSED
@@ -128,6 +251,7 @@ class GStreamerPipeline:
                     if self.connected:
                         self.connected = False
                         self.exit_reason = _RESULT_CLOSED
+                        self._fail_manual_snapshot("Camera disconnected before taking the snapshot")
                         self._put_status("change_cam", False)
                         restart = True
                     else:
@@ -141,6 +265,8 @@ class GStreamerPipeline:
                     self._start_snapshot_recording(value.get("folders", {}))
                 elif event == "record_stop":
                     self._stop_snapshot_recording()
+                elif event == "snapshot_capture":
+                    restart = self._queue_manual_snapshot(value) or restart
         except (EOFError, OSError):
             self.shutdown_event.set()
             self.connected = False
@@ -201,10 +327,13 @@ class GStreamerPipeline:
 
     def run(self):
         pipeline_str = (
-            "rtspsrc name=source latency=100 protocols=tcp ! "
-            "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! videoscale ! "
+            f"rtspsrc name=source latency={CAMERA_PIPELINE_LATENCY_MS} protocols=tcp ! "
+            "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! tee name=video "
+            "video. ! queue leaky=downstream max-size-buffers=1 ! videoscale ! "
             "video/x-raw,format=BGR,width=800,height=600 ! "
-            "appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true"
+            "appsink name=display_sink emit-signals=true sync=false max-buffers=1 drop=true "
+            "video. ! queue leaky=downstream max-size-buffers=1 ! video/x-raw,format=BGR ! "
+            "appsink name=capture_sink emit-signals=true sync=false max-buffers=1 drop=true"
         )
         bus = None
         self._clear_frames()
@@ -215,9 +344,11 @@ class GStreamerPipeline:
         try:
             self.pipeline = Gst.parse_launch(pipeline_str)
             source = self.pipeline.get_by_name("source")
-            sink = self.pipeline.get_by_name("sink")
+            display_sink = self.pipeline.get_by_name("display_sink")
+            capture_sink = self.pipeline.get_by_name("capture_sink")
             source.set_property("location", self.create_url(self.channel))
-            sink.connect("new-sample", self.on_new_sample)
+            display_sink.connect("new-sample", self.on_new_display_sample)
+            capture_sink.connect("new-sample", self.on_new_capture_sample)
             bus = self.pipeline.get_bus()
             bus.add_signal_watch()
             bus.connect("message", self.on_message)
@@ -282,6 +413,7 @@ def gstreamer_main(connection, pool, shutdown_event):
                     f"{MAX_PIPELINE_ATTEMPTS} attempts"
                 )
                 pipeline.connected = False
+                pipeline._fail_manual_snapshot("Camera pipeline failed before taking the snapshot")
                 pipeline._put_status("change_cam", False)
                 failed_attempts = 0
                 continue
@@ -289,6 +421,7 @@ def gstreamer_main(connection, pool, shutdown_event):
             shutdown_event.wait(PIPELINE_RETRY_DELAY_SECONDS)
     finally:
         pipeline._stop_snapshot_recording()
+        pipeline._fail_manual_snapshot("Camera process stopped before taking the snapshot")
         pipeline._remove_sources()
         if pipeline.pipeline:
             pipeline.pipeline.set_state(Gst.State.NULL)

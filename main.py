@@ -1,278 +1,188 @@
 from dataclasses import dataclass
 from pathlib import Path
-import re
 import signal
 from multiprocessing import get_context
 from queue import Empty
 
+import sitecustomize
 import FreeSimpleGUI as sg
 
-from camera.camera_gstreamer import gstreamer_main
-from connection.connection_main import create_connection_communication
-from gps.gps_connection import main as gps_main
-from interface.filter_schema import RCS_KEY
+import MAIN_BASE as base
+from CAMERA.camera_gstreamer import gstreamer_main
+from CONNECTION.connection_main import create_connection_communication
+from GPS.gps_connection import main as gps_main
 from menu_configurations import Configurations
-from recording.playback import playback_main
-from recording.point_cloud_recorder import RECORDING_METADATA_NAME, TIMESTAMPS_METADATA_NAME
+from CAPTURE.playback import playback_main
+from CAPTURE.snapshot_playback import snapshot_playback_main
 
 
 @dataclass
 class RuntimeState:
     pending_playback_folder: str | None = None
+    pending_snapshot_playback: dict | None = None
     recording_stop_pending: bool = False
 
 
-def check_popup():
-    layout = [
-        [sg.Text("Digite [Alohomora] para confirmar salvar permanentemente nos radares!", justification="center")],
-        [sg.Input("", key="passwd", expand_x=True, justification="center")],
-        [sg.Push(), sg.Ok(), sg.Cancel(), sg.Push()],
-    ]
-    window = sg.Window("PASSWORD", layout)
+def _resolution(values):
     try:
-        while True:
-            event, values = window.read()
-            if event in (sg.WIN_CLOSED, "Cancel"):
-                return False
-            if event == "Ok":
-                return values["passwd"] == "Alohomora"
-    finally:
-        window.close()
+        width = int(str(values.get("playback_width", "1280")).strip())
+        height = int(str(values.get("playback_height", "720")).strip())
+    except ValueError as error:
+        raise ValueError("Playback width and height must be integers") from error
+    if width <= 0 or height <= 0:
+        raise ValueError("Playback width and height must be positive")
+    return width, height
 
 
-def _join_processes(processes, timeout=3.0):
-    for process in processes:
-        process.join(timeout)
-    for process in processes:
-        if process.is_alive():
-            process.terminate()
-    for process in processes:
-        process.join()
-
-
-def _start_recording(values, config, send_radar):
-    folder = Path(values.get("record_folder", "")).expanduser()
-    channels = [
-        channel
-        for channel in range(1, 4)
-        if values.get(f"record_radar_{channel}")
-    ]
-    if not folder.is_dir():
-        sg.popup_error("Select an existing destination folder", title="Recording error")
-        return
-    if not channels:
-        sg.popup_error("Select at least one radar to record", title="Recording error")
-        return
-    config.set_recording_pending(True)
-    send_radar.send(("record_start", {"folder": str(folder.resolve()), "channels": channels}))
-
-
-def _request_recording_stop(config, runtime, send_cam):
-    if runtime.recording_stop_pending:
-        return
-    runtime.recording_stop_pending = True
-    config.set_recording_pending(False)
-    send_cam.send(("record_stop", None))
-
-
-def _is_recording_folder(folder: Path) -> bool:
-    return (
-        folder.is_dir()
-        and any(folder.glob("*.pcd"))
-        and (
-            (folder / RECORDING_METADATA_NAME).is_file()
-            or (folder / TIMESTAMPS_METADATA_NAME).is_file()
-        )
-    )
-
-
-def _maybe_start_playback(config, runtime, send_playback):
+def _maybe_start_snapshot_playback(config, runtime, send_snapshot_playback):
     if (
-        runtime.pending_playback_folder
+        runtime.pending_snapshot_playback
         and not config.recording
         and not config.recording_pending
         and not config.connected_radar
         and not config.connected_cam
-        and not config.playback
+        and not config.snapshot_playback
     ):
-        folder = runtime.pending_playback_folder
-        runtime.pending_playback_folder = None
-        send_playback.send(("playback_start", {"folder": folder}))
+        payload = runtime.pending_snapshot_playback
+        runtime.pending_snapshot_playback = None
+        send_snapshot_playback.send(("snapshot_playback_start", payload))
 
 
-def _disconnect_live_for_playback(config, runtime, send_radar, send_cam, send_playback):
+def _disconnect_live_for_snapshot_playback(
+    config, runtime, send_radar, send_cam, send_snapshot_playback
+):
     if config.connected_cam:
         send_cam.send(("conn_cam", None))
     if config.connected_radar:
         send_radar.send(("conn_radar", None))
-    _maybe_start_playback(config, runtime, send_playback)
+    _maybe_start_snapshot_playback(config, runtime, send_snapshot_playback)
 
 
-def _request_playback(
-    values,
-    config,
-    runtime,
-    send_radar,
-    send_cam,
-    send_playback,
+def _request_snapshot_playback(
+    values, config, runtime, send_radar, send_cam, send_snapshot_playback
 ):
-    if config.playback:
-        send_playback.send(("playback_stop", None))
+    if config.snapshot_playback:
+        send_snapshot_playback.send(("snapshot_playback_stop", None))
         return
 
-    folder = Path(values.get("playback_folder", "")).expanduser()
-    if not _is_recording_folder(folder):
-        sg.popup_error(
-            "Select a recording folder containing PCD files and recording metadata",
-            title="Playback error",
+    folder = Path(values.get("snapshot_playback_folder", "")).expanduser()
+    if not folder.is_dir() or not (folder / "recording.json").is_file():
+        config.show_snapshot_playback_error(
+            "Select a recording folder containing recording.json and camera images"
         )
         return
+    try:
+        width, height = _resolution(values)
+    except ValueError as error:
+        config.show_snapshot_playback_error(str(error))
+        return
 
-    runtime.pending_playback_folder = str(folder.resolve())
-    config.set_playback_pending()
+    runtime.pending_snapshot_playback = {
+        "folder": str(folder.resolve()),
+        "snapshot_folder": str(Path(values.get("snapshot_folder", "")).expanduser().resolve()),
+        "width": width,
+        "height": height,
+    }
+    config.set_snapshot_playback_pending()
     if config.recording or config.recording_pending:
-        _request_recording_stop(config, runtime, send_cam)
+        base._request_recording_stop(config, runtime, send_cam)
     else:
-        _disconnect_live_for_playback(
-            config,
-            runtime,
-            send_radar,
-            send_cam,
-            send_playback,
+        _disconnect_live_for_snapshot_playback(
+            config, runtime, send_radar, send_cam, send_snapshot_playback
         )
 
 
 def _handle_gui_event(
-    event,
-    values,
-    config,
-    runtime,
-    send_radar,
-    send_cam,
-    send_gps,
-    send_playback,
+    event, values, config, runtime,
+    send_radar, send_cam, send_gps, send_playback, send_snapshot_playback,
     shutdown_event,
 ):
-    if event == sg.WINDOW_CLOSED:
-        shutdown_event.set()
+    if event == "snapshot_playback_toggle":
+        _request_snapshot_playback(
+            values, config, runtime, send_radar, send_cam, send_snapshot_playback
+        )
+        return
+    if event == "snapshot_playback_pause":
+        send_snapshot_playback.send(("snapshot_playback_pause", None))
+        return
+    if event == "snapshot_playback_previous":
+        send_snapshot_playback.send(("snapshot_playback_previous", None))
+        return
+    if event == "snapshot_playback_next":
+        send_snapshot_playback.send(("snapshot_playback_next", None))
+        return
+    if event == "snapshot_playback_snapshot":
+        folder = Path(values.get("snapshot_folder", "")).expanduser()
+        if not folder.is_dir():
+            config.show_snapshot_playback_snapshot_error(
+                "Select an existing snapshot destination folder"
+            )
+            return
+        send_snapshot_playback.send((
+            "snapshot_playback_snapshot",
+            {"folder": str(folder.resolve())},
+        ))
+        return
+    if event == "playback_resolution_apply":
+        try:
+            width, height = _resolution(values)
+        except ValueError as error:
+            sg.popup_error(str(error), title="Playback resolution error")
+            return
+        payload = {"width": width, "height": height}
+        send_playback.send(("playback_resolution", payload))
+        send_snapshot_playback.send(("playback_resolution", payload))
+        config.change_playback_resolution(width, height)
         return
 
-    match event:
-        case "Send":
-            if config.connected_radar:
-                send_radar.send((event, values))
-            config.window["save_nvm"].update(button_color=("black", "white"))
-        case "save_nvm":
-            if config.connected_radar and check_popup():
-                config.window["save_nvm"].update(button_color=("white", "green"))
-                send_radar.send((event, values))
-        case "record_toggle":
-            if config.recording:
-                _request_recording_stop(config, runtime, send_cam)
-            else:
-                _start_recording(values, config, send_radar)
-        case "playback_toggle":
-            _request_playback(
-                values,
-                config,
-                runtime,
-                send_radar,
-                send_cam,
-                send_playback,
-            )
-        case key if isinstance(key, str) and key.startswith("filter"):
-            if event == RCS_KEY:
-                config.window["RCS_FILTER_VALUE"].update(f"{values[RCS_KEY]:.1f}")
-            send_radar.send((event, values))
-            send_playback.send((event, values))
-        case key if isinstance(key, str) and re.match(r"^choose_", key):
-            choice = int(event.rsplit("_", 1)[1])
-            send_radar.send(("choose", choice))
-            send_cam.send(("choose", choice))
-        case key if isinstance(key, str) and re.match(r"^conn_", key):
-            if config.playback or config.playback_pending:
-                return
-            target = {
-                "conn_radar": send_radar,
-                "conn_cam": send_cam,
-                "conn_gps": send_gps,
-            }.get(event)
-            if target:
-                target.send((event, None))
-        case "gps_maps":
-            send_gps.send((event, None))
-        case "DISTANCE":
-            config.window["SLIDER_VAL"].update(int(values["DISTANCE"]))
+    base._handle_gui_event(
+        event, values, config, runtime,
+        send_radar, send_cam, send_gps, send_playback, shutdown_event,
+    )
+    if isinstance(event, str) and event.startswith("filter"):
+        send_snapshot_playback.send((event, values))
 
 
 def _apply_status_message(
-    message,
-    payload,
-    config,
-    runtime,
-    send_radar,
-    send_cam,
-    send_playback,
+    message, payload, config, runtime,
+    send_radar, send_cam, send_playback, send_snapshot_playback,
 ):
-    match message:
-        case "message_201":
-            config.change_radar(payload)
-        case "received_messages":
-            config.change_received_messages(payload)
-        case "change_radar":
-            config.change_connection_radar(payload)
-            _maybe_start_playback(config, runtime, send_playback)
-        case "change_cam":
-            config.change_connection_cam(payload)
-            _maybe_start_playback(config, runtime, send_playback)
-        case "gps_text":
-            config.window[message].update(payload)
-        case "conn_gps":
-            config.change_connection_gps(payload)
-        case "recording_state":
-            config.change_recording(payload)
-            if payload.get("active"):
-                send_cam.send(("record_start", {"folders": payload.get("folders", {})}))
-            else:
-                send_cam.send(("record_stop", None))
-            if not payload.get("active") and runtime.pending_playback_folder:
-                _disconnect_live_for_playback(
-                    config,
-                    runtime,
-                    send_radar,
-                    send_cam,
-                    send_playback,
-                )
-        case "recording_progress":
-            config.change_recording_progress(payload)
-        case "recording_error":
-            runtime.recording_stop_pending = False
-            send_cam.send(("record_stop", None))
-            config.show_recording_error(payload)
-        case "camera_snapshot":
-            send_radar.send(("record_camera", payload))
-        case "camera_recording_state":
-            if not payload.get("active") and runtime.recording_stop_pending:
-                runtime.recording_stop_pending = False
-                send_radar.send(("record_stop", None))
-        case "camera_recording_error":
-            config.show_camera_recording_error(payload)
-        case "playback_state":
-            config.change_playback(payload)
-        case "playback_progress":
-            config.change_playback_progress(payload)
-        case "playback_error":
-            runtime.pending_playback_folder = None
-            config.show_playback_error(payload)
+    if message == "snapshot_playback_state":
+        config.change_snapshot_playback(payload)
+        return
+    if message == "snapshot_playback_progress":
+        config.change_snapshot_playback_progress(payload)
+        return
+    if message == "snapshot_playback_error":
+        runtime.pending_snapshot_playback = None
+        config.show_snapshot_playback_error(payload)
+        return
+    if message == "snapshot_playback_snapshot_saved":
+        config.show_snapshot_playback_snapshot_saved(payload)
+        return
+    if message == "snapshot_playback_snapshot_error":
+        config.show_snapshot_playback_snapshot_error(payload)
+        return
+    if message == "playback_error" and isinstance(payload, dict):
+        payload = payload.get("message", "Playback failed")
+
+    base._apply_status_message(
+        message, payload, config, runtime,
+        send_radar, send_cam, send_playback,
+    )
+
+    if message in ("change_radar", "change_cam"):
+        _maybe_start_snapshot_playback(config, runtime, send_snapshot_playback)
+    elif message == "recording_state" and not payload.get("active"):
+        if runtime.pending_snapshot_playback:
+            _disconnect_live_for_snapshot_playback(
+                config, runtime, send_radar, send_cam, send_snapshot_playback
+            )
 
 
 def _drain_status_queue(
-    all_queue,
-    config,
-    runtime,
-    send_radar,
-    send_cam,
-    send_playback,
+    all_queue, config, runtime,
+    send_radar, send_cam, send_playback, send_snapshot_playback,
 ):
     while True:
         try:
@@ -280,59 +190,27 @@ def _drain_status_queue(
         except Empty:
             return
         _apply_status_message(
-            message,
-            payload,
-            config,
-            runtime,
-            send_radar,
-            send_cam,
-            send_playback,
+            message, payload, config, runtime,
+            send_radar, send_cam, send_playback, send_snapshot_playback,
         )
 
 
 def _run_event_loop(
-    config,
-    all_queue,
-    runtime,
-    send_radar,
-    send_cam,
-    send_gps,
-    send_playback,
+    config, all_queue, runtime,
+    send_radar, send_cam, send_gps, send_playback, send_snapshot_playback,
     shutdown_event,
 ):
     while not shutdown_event.is_set():
         event, values = config.read()
         _handle_gui_event(
-            event,
-            values,
-            config,
-            runtime,
-            send_radar,
-            send_cam,
-            send_gps,
-            send_playback,
+            event, values, config, runtime,
+            send_radar, send_cam, send_gps, send_playback, send_snapshot_playback,
             shutdown_event,
         )
         _drain_status_queue(
-            all_queue,
-            config,
-            runtime,
-            send_radar,
-            send_cam,
-            send_playback,
+            all_queue, config, runtime,
+            send_radar, send_cam, send_playback, send_snapshot_playback,
         )
-
-
-def _shutdown(processes, pipes, config, shutdown_event):
-    shutdown_event.set()
-    for pipe in pipes:
-        try:
-            pipe.send(("STOP", None))
-            pipe.close()
-        except (BrokenPipeError, EOFError, OSError):
-            pass
-    _join_processes(processes)
-    config.window.close()
 
 
 def main():
@@ -344,7 +222,6 @@ def main():
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-
     sg.set_options(font=("Helvetica", 12))
     all_queue = process_context.Queue(128)
 
@@ -352,6 +229,7 @@ def main():
     receive_cam, send_cam = process_context.Pipe()
     receive_gps, send_gps = process_context.Pipe()
     receive_playback, send_playback = process_context.Pipe()
+    receive_snapshot_playback, send_snapshot_playback = process_context.Pipe()
 
     config = Configurations()
     _, values = config.read()
@@ -374,25 +252,24 @@ def main():
             target=playback_main,
             args=(receive_playback, all_queue, shutdown_event, values),
         ),
+        process_context.Process(
+            target=snapshot_playback_main,
+            args=(receive_snapshot_playback, all_queue, shutdown_event, values),
+        ),
     ]
     for process in processes:
         process.start()
 
     try:
         _run_event_loop(
-            config,
-            all_queue,
-            runtime,
-            send_radar,
-            send_cam,
-            send_gps,
-            send_playback,
+            config, all_queue, runtime,
+            send_radar, send_cam, send_gps, send_playback, send_snapshot_playback,
             shutdown_event,
         )
     finally:
-        _shutdown(
+        base._shutdown(
             processes,
-            (send_radar, send_cam, send_gps, send_playback),
+            (send_radar, send_cam, send_gps, send_playback, send_snapshot_playback),
             config,
             shutdown_event,
         )
