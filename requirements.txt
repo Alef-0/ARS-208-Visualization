@@ -1,0 +1,8 @@
+FreeSimpleGUI
+bitstring
+numpy
+opencv-python
+pypcd4
+PyGObject
+requests
+urllib3
