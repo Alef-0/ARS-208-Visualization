@@ -34,6 +34,16 @@ def _resolution(values):
     return width, height
 
 
+def _point_cutoff(values):
+    try:
+        cutoff = float(str(values.get("point_cutoff", "15")).strip())
+    except ValueError as error:
+        raise ValueError("Point cutoff must be a number in meters") from error
+    if cutoff <= 0:
+        raise ValueError("Point cutoff must be greater than zero")
+    return cutoff
+
+
 def _maybe_start_snapshot_playback(config, runtime, send_snapshot_playback):
     if (
         runtime.pending_snapshot_playback
@@ -130,9 +140,22 @@ def _handle_gui_event(
             sg.popup_error(str(error), title="Playback resolution error")
             return
         payload = {"width": width, "height": height}
+        send_cam.send(("playback_resolution", payload))
         send_playback.send(("playback_resolution", payload))
         send_snapshot_playback.send(("playback_resolution", payload))
         config.change_playback_resolution(width, height)
+        return
+    if event == "point_cutoff_apply":
+        try:
+            cutoff = _point_cutoff(values)
+        except ValueError as error:
+            sg.popup_error(str(error), title="Point cutoff error")
+            return
+        payload = {"distance": cutoff}
+        send_radar.send(("point_cutoff", payload))
+        send_playback.send(("point_cutoff", payload))
+        send_snapshot_playback.send(("point_cutoff", payload))
+        config.change_point_cutoff(cutoff)
         return
 
     base._handle_gui_event(

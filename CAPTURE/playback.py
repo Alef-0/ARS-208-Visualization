@@ -14,49 +14,139 @@ from CAPTURE.point_cloud_recorder import RECORDING_METADATA_NAME, TIMESTAMPS_MET
 
 DEFAULT_PLAYBACK_WIDTH = 1280
 DEFAULT_PLAYBACK_HEIGHT = 720
+_CAMERA_SUFFIXES = {".jpg", ".jpeg", ".png"}
 
 
 @dataclass(frozen=True)
 class PlaybackEntry:
-    point_cloud: Path
+    point_cloud: Path | None
     recorded_at: datetime
     camera_frame: Path | None = None
+    camera_recorded_at: datetime | None = None
+
+
+def _path_if_file(root: Path, filename) -> Path | None:
+    if not filename:
+        return None
+    path = root / str(filename)
+    return path if path.is_file() else None
+
+
+def _file_time(path: Path) -> datetime:
+    return datetime.fromtimestamp(path.stat().st_mtime).astimezone()
+
+
+def _parse_time(value, fallback: Path) -> datetime:
+    if value:
+        return datetime.fromisoformat(str(value))
+    return _file_time(fallback)
 
 
 def load_recording_entries(folder: str | Path) -> tuple[PlaybackEntry, ...]:
     root = Path(folder).expanduser()
     if not root.is_dir():
         raise ValueError("The playback source must be an existing recording folder")
+
     metadata_path = root / RECORDING_METADATA_NAME
     timestamps_path = root / TIMESTAMPS_METADATA_NAME
     entries = []
+    referenced_point_clouds = set()
+    referenced_camera_frames = set()
+
+    timestamps = {}
+    if timestamps_path.is_file():
+        timestamps = json.loads(timestamps_path.read_text(encoding="utf-8"))
+        if not isinstance(timestamps, dict):
+            raise ValueError(f"Invalid {TIMESTAMPS_METADATA_NAME} format")
+
     if metadata_path.is_file():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if not isinstance(metadata, list):
             raise ValueError(f"Invalid {RECORDING_METADATA_NAME} format")
+
         for item in metadata:
+            if not isinstance(item, dict):
+                continue
+            point_name = item.get("point_cloud")
             camera_name = item.get("camera_frame")
+            if point_name:
+                referenced_point_clouds.add(Path(str(point_name)).name)
+            if camera_name:
+                referenced_camera_frames.add(Path(str(camera_name)).name)
+
+            point_cloud = _path_if_file(root, point_name)
+            camera_frame = _path_if_file(root, camera_name)
+            if point_cloud is None and camera_frame is None:
+                continue
+
+            if point_cloud is not None:
+                recorded_at = _parse_time(item.get("recorded_at"), point_cloud)
+            else:
+                recorded_at = _parse_time(
+                    item.get("camera_recorded_at") or item.get("recorded_at"),
+                    camera_frame,
+                )
+
+            camera_recorded_at = None
+            if camera_frame is not None:
+                camera_recorded_at = _parse_time(
+                    item.get("camera_recorded_at"),
+                    camera_frame,
+                )
+
             entries.append(PlaybackEntry(
-                point_cloud=root / item["point_cloud"],
-                recorded_at=datetime.fromisoformat(item["recorded_at"]),
-                camera_frame=root / camera_name if camera_name else None,
+                point_cloud=point_cloud,
+                recorded_at=recorded_at,
+                camera_frame=camera_frame,
+                camera_recorded_at=camera_recorded_at,
             ))
-    elif timestamps_path.is_file():
-        timestamps = json.loads(timestamps_path.read_text(encoding="utf-8"))
-        if not isinstance(timestamps, dict):
-            raise ValueError(f"Invalid {TIMESTAMPS_METADATA_NAME} format")
-        for filename, recorded_at in timestamps.items():
-            entries.append(PlaybackEntry(root / filename, datetime.fromisoformat(recorded_at)))
-    else:
-        raise ValueError(
-            f"The folder does not contain {RECORDING_METADATA_NAME} or {TIMESTAMPS_METADATA_NAME}"
-        )
-    entries.sort(key=lambda entry: entry.recorded_at)
+
+    for filename, recorded_at in timestamps.items():
+        name = Path(str(filename)).name
+        if name in referenced_point_clouds:
+            continue
+        point_cloud = _path_if_file(root, filename)
+        if point_cloud is None:
+            continue
+        referenced_point_clouds.add(name)
+        entries.append(PlaybackEntry(
+            point_cloud=point_cloud,
+            recorded_at=_parse_time(recorded_at, point_cloud),
+        ))
+
+    for point_cloud in root.glob("*.pcd"):
+        if point_cloud.name in referenced_point_clouds:
+            continue
+        referenced_point_clouds.add(point_cloud.name)
+        entries.append(PlaybackEntry(
+            point_cloud=point_cloud,
+            recorded_at=_parse_time(timestamps.get(point_cloud.name), point_cloud),
+        ))
+
+    for camera_frame in root.iterdir():
+        if (
+            not camera_frame.is_file()
+            or not camera_frame.name.lower().startswith("camera_")
+            or camera_frame.suffix.lower() not in _CAMERA_SUFFIXES
+            or camera_frame.name in referenced_camera_frames
+        ):
+            continue
+        referenced_camera_frames.add(camera_frame.name)
+        camera_time = _file_time(camera_frame)
+        entries.append(PlaybackEntry(
+            point_cloud=None,
+            recorded_at=camera_time,
+            camera_frame=camera_frame,
+            camera_recorded_at=camera_time,
+        ))
+
+    entries.sort(key=lambda entry: (
+        entry.recorded_at.timestamp(),
+        entry.point_cloud.name if entry.point_cloud else "",
+        entry.camera_frame.name if entry.camera_frame else "",
+    ))
     if not entries:
-        raise ValueError("The recording folder contains no point-cloud frames")
-    missing = [entry.point_cloud.name for entry in entries if not entry.point_cloud.is_file()]
-    if missing:
-        raise FileNotFoundError(f"Missing point-cloud file: {missing[0]}")
+        raise ValueError("The recording folder contains no playable point-cloud or camera frames")
     return tuple(entries)
 
 
@@ -81,7 +171,7 @@ class PlaybackController:
         self.pool = pool
         self.shutdown_event = shutdown_event
         self.filters = Filter_graph(initial_values)
-        self.graph = Graph_radar()
+        self.graph = Graph_radar(initial_values.get("point_cutoff", 15.0))
         self.stop_requested = False
         self.width = DEFAULT_PLAYBACK_WIDTH
         self.height = DEFAULT_PLAYBACK_HEIGHT
@@ -101,6 +191,8 @@ class PlaybackController:
                 self._play(value)
             elif event == "playback_resolution":
                 self._set_resolution(value)
+            elif event == "point_cutoff":
+                self.graph.set_distance_cutoff(value.get("distance", 15.0))
             elif isinstance(event, str) and event.startswith("filter"):
                 self.filters.update_values(event, value)
         self._close_windows()
@@ -127,24 +219,40 @@ class PlaybackController:
                 self._process_controls()
                 if self.stop_requested or self.shutdown_event.is_set():
                     break
-                reader = PointCloudReader(entry.point_cloud)
-                if reader.frame_type == "cluster":
-                    x, y, colors = self.filters.filter_point_sequence(reader.clusters)
-                else:
-                    x, y, colors = self.filters.filter_object_sequence(reader.objects)
-                self.graph.show_points(x, y, colors)
-                if entry.camera_frame and entry.camera_frame.is_file():
+
+                if entry.point_cloud is not None:
+                    reader = PointCloudReader(entry.point_cloud)
+                    if reader.frame_type == "cluster":
+                        x, y, colors = self.filters.filter_point_sequence(reader.clusters)
+                    else:
+                        x, y, colors = self.filters.filter_object_sequence(reader.objects)
+                    self.graph.show_points(x, y, colors, self.filters.last_points)
+
+                if entry.camera_frame is not None:
                     image = cv.imread(str(entry.camera_frame))
                     if image is not None:
                         image = cv.resize(image, (self.width, self.height), interpolation=cv.INTER_AREA)
                         cv.imshow("CAMERA PLAYBACK", image)
                         cv.waitKey(1)
+
+                current_file = (
+                    entry.point_cloud.name
+                    if entry.point_cloud is not None
+                    else entry.camera_frame.name
+                )
                 _put_status(self.pool, "playback_progress", {
-                    "current": index, "total": len(entries),
-                    "file": entry.point_cloud.name, "mode": "record",
+                    "current": index,
+                    "total": len(entries),
+                    "file": current_file,
+                    "point_cloud": entry.point_cloud.name if entry.point_cloud else None,
+                    "image": entry.camera_frame.name if entry.camera_frame else None,
+                    "mode": "record",
                 })
                 if index < len(entries):
-                    delay = max(0.0, (entries[index].recorded_at - entry.recorded_at).total_seconds())
+                    delay = max(
+                        0.0,
+                        entries[index].recorded_at.timestamp() - entry.recorded_at.timestamp(),
+                    )
                     self._wait(delay)
             completed = not self.stop_requested and not self.shutdown_event.is_set()
             _put_status(self.pool, "playback_state", {
@@ -167,6 +275,8 @@ class PlaybackController:
             self.stop_requested = True
         elif event == "playback_resolution":
             self._set_resolution(value)
+        elif event == "point_cutoff":
+            self.graph.set_distance_cutoff(value.get("distance", 15.0))
         elif isinstance(event, str) and event.startswith("filter"):
             self.filters.update_values(event, value)
 

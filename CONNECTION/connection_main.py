@@ -144,7 +144,7 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
     frame_history = {channel: deque() for channel in RADAR_CHANNELS}
     recording_ready: dict[int, bool] = {}
     received_message_ids: set[int] = set()
-    graph = Graph_radar()
+    graph = Graph_radar(initial_values.get("point_cutoff", 15.0))
     filters = Filter_graph(initial_values)
 
     def report_progress(channel, count):
@@ -177,7 +177,7 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                     x, y, colors = filters.filter_points(previous_messages)
                 else:
                     x, y, colors = filters.filter_objects(previous_messages)
-                graph.show_points(x, y, colors)
+                graph.show_points(x, y, colors, filters.last_points)
 
             points = previous_messages.snapshot()
             frame = RadarFrame(
@@ -306,6 +306,8 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                         _stop_recording(recording, pool, recording_ready)
                     elif event == "snapshot_capture":
                         save_manual_snapshot(values)
+                    elif event == "point_cutoff":
+                        graph.set_distance_cutoff(values.get("distance", 15.0))
                     elif isinstance(event, str) and event.startswith("filter"):
                         filters.update_values(event, values)
             except (EOFError, OSError):

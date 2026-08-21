@@ -23,6 +23,7 @@ class Filter_graph:
         }
         self.pdh_max = int(values.get(PDH_KEY, 3))
         self.rcs_min = float(values.get(RCS_KEY, -20.0))
+        self.last_points = ()
         self._load(values)
 
     def _load(self, values: dict) -> None:
@@ -108,7 +109,7 @@ class Filter_graph:
         )
 
     def filter_point_sequence(self, points: Iterable[RadarPoint]):
-        all_x, all_y, colors = [], [], []
+        all_x, all_y, colors, displayed = [], [], [], []
         for point in points:
             if not self._coordinates_available(point.dist_latitude, point.dist_long):
                 continue
@@ -123,10 +124,12 @@ class Filter_graph:
             all_x.append(point.dist_latitude)
             all_y.append(point.dist_long)
             colors.append(self._color(point.dynamic_property))
+            displayed.append(point)
+        self.last_points = tuple(displayed)
         return all_x, all_y, colors
 
     def filter_object_sequence(self, objects: Iterable[RadarObject]):
-        all_x, all_y, colors = [], [], []
+        all_x, all_y, colors, displayed = [], [], [], []
         for obj in objects:
             if not self._coordinates_available(obj.dist_latitude, obj.dist_long):
                 continue
@@ -135,6 +138,8 @@ class Filter_graph:
             all_x.append(obj.dist_latitude)
             all_y.append(obj.dist_long)
             colors.append(self._color(obj.dynamic_property))
+            displayed.append(obj)
+        self.last_points = tuple(displayed)
         return all_x, all_y, colors
 
     def filter_points(self, messages: Clusters_messages):

@@ -1,5 +1,4 @@
-from datetime import datetime, timedelta
-import json
+from datetime import timedelta
 from pathlib import Path
 import signal
 import time
@@ -9,8 +8,9 @@ import cv2 as cv
 from GRAPH.graph_draw import Graph_radar
 from GRAPH.graph_filter import Filter_graph
 from CAPTURE.manual_snapshot import ManualSnapshotWriter
+from CAPTURE.playback import load_recording_entries
 from CAPTURE.point_cloud_reader import PointCloudReader
-from CAPTURE.point_cloud_recorder import CAMERA_DELAY_SECONDS, RECORDING_METADATA_NAME
+from CAPTURE.point_cloud_recorder import CAMERA_DELAY_SECONDS
 
 DEFAULT_PLAYBACK_WIDTH = 1280
 DEFAULT_PLAYBACK_HEIGHT = 720
@@ -25,37 +25,7 @@ def _put_status(pool, message, payload):
 
 def _load_entries(folder):
     root = Path(folder).expanduser()
-    metadata_path = root / RECORDING_METADATA_NAME
-    if not root.is_dir() or not metadata_path.is_file():
-        raise ValueError("Select a recording folder containing recording.json")
-
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if not isinstance(metadata, list):
-        raise ValueError(f"Invalid {RECORDING_METADATA_NAME} format")
-
-    entries = []
-    for item in metadata:
-        camera = item.get("camera_frame")
-        if not camera:
-            continue
-        point_cloud = root / item["point_cloud"]
-        image = root / camera
-        if not point_cloud.is_file() or not image.is_file():
-            continue
-        camera_time = item.get("camera_recorded_at")
-        entries.append({
-            "point_cloud": point_cloud,
-            "image": image,
-            "recorded_at": datetime.fromisoformat(item["recorded_at"]),
-            "camera_recorded_at": (
-                datetime.fromisoformat(camera_time) if camera_time else None
-            ),
-        })
-
-    entries.sort(key=lambda item: item["recorded_at"])
-    if not entries:
-        raise ValueError("No recording frames have corresponding camera images")
-    return root, entries
+    return root, list(load_recording_entries(root))
 
 
 class SnapshotPlaybackController:
@@ -64,7 +34,7 @@ class SnapshotPlaybackController:
         self.pool = pool
         self.shutdown_event = shutdown_event
         self.filters = Filter_graph(initial_values)
-        self.graph = Graph_radar()
+        self.graph = Graph_radar(initial_values.get("point_cutoff", 15.0))
         self.active = False
         self.paused = False
         self.stop_requested = False
@@ -90,6 +60,8 @@ class SnapshotPlaybackController:
                 self._play(value)
             elif event == "playback_resolution":
                 self._set_resolution(value)
+            elif event == "point_cutoff":
+                self.graph.set_distance_cutoff(value.get("distance", 15.0))
             elif isinstance(event, str) and event.startswith("filter"):
                 self.filters.update_values(event, value)
         self._close_windows()
@@ -173,10 +145,8 @@ class SnapshotPlaybackController:
             return 0.05
         return max(
             0.05,
-            (
-                self.entries[self.index + 1]["recorded_at"]
-                - self.entries[self.index]["recorded_at"]
-            ).total_seconds(),
+            self.entries[self.index + 1].recorded_at.timestamp()
+            - self.entries[self.index].recorded_at.timestamp(),
         )
 
     def _handle(self, event, value):
@@ -208,35 +178,53 @@ class SnapshotPlaybackController:
                 self._set_resolution(value)
             except Exception as error:
                 _put_status(self.pool, "playback_resolution_error", str(error))
+        elif event == "point_cutoff":
+            try:
+                self.graph.set_distance_cutoff(value.get("distance", 15.0))
+                if self.active and self.entries:
+                    self._render()
+            except Exception as error:
+                _put_status(self.pool, "point_cutoff_error", str(error))
         elif isinstance(event, str) and event.startswith("filter"):
             self.filters.update_values(event, value)
             self._render()
 
     def _render(self):
         entry = self.entries[self.index]
-        reader = PointCloudReader(entry["point_cloud"])
-        self.current_reader = reader
-        if reader.frame_type == "cluster":
-            x, y, colors = self.filters.filter_point_sequence(reader.clusters)
-        else:
-            x, y, colors = self.filters.filter_object_sequence(reader.objects)
-        self.graph.show_points(x, y, colors)
+        self.current_reader = None
 
-        image = cv.imread(str(entry["image"]))
-        if image is None:
-            raise RuntimeError(f"Could not read image: {entry['image'].name}")
-        image = cv.resize(
-            image,
-            (self.width, self.height),
-            interpolation=cv.INTER_AREA,
+        if entry.point_cloud is not None:
+            reader = PointCloudReader(entry.point_cloud)
+            self.current_reader = reader
+            if reader.frame_type == "cluster":
+                x, y, colors = self.filters.filter_point_sequence(reader.clusters)
+            else:
+                x, y, colors = self.filters.filter_object_sequence(reader.objects)
+            self.graph.show_points(x, y, colors, self.filters.last_points)
+
+        if entry.camera_frame is not None:
+            image = cv.imread(str(entry.camera_frame))
+            if image is None:
+                raise RuntimeError(f"Could not read image: {entry.camera_frame.name}")
+            image = cv.resize(
+                image,
+                (self.width, self.height),
+                interpolation=cv.INTER_AREA,
+            )
+            cv.imshow("CAMERA PLAYBACK", image)
+            cv.waitKey(1)
+
+        current_file = (
+            entry.point_cloud.name
+            if entry.point_cloud is not None
+            else entry.camera_frame.name
         )
-        cv.imshow("CAMERA PLAYBACK", image)
-        cv.waitKey(1)
         _put_status(self.pool, "snapshot_playback_progress", {
             "current": self.index + 1,
             "total": len(self.entries),
-            "file": entry["point_cloud"].name,
-            "image": entry["image"].name,
+            "file": current_file,
+            "point_cloud": entry.point_cloud.name if entry.point_cloud else None,
+            "image": entry.camera_frame.name if entry.camera_frame else None,
         })
 
     def _state(self):
@@ -248,21 +236,29 @@ class SnapshotPlaybackController:
         })
 
     def _save_snapshot(self, folder):
-        if self.current_reader is None or not self.entries:
+        if not self.entries:
             raise RuntimeError("No playback frame is currently displayed")
+        entry = self.entries[self.index]
+        if (
+            self.current_reader is None
+            or entry.point_cloud is None
+            or entry.camera_frame is None
+        ):
+            raise RuntimeError(
+                "The current playback entry does not contain both radar and camera data"
+            )
         destination = folder or self.snapshot_folder
         if not destination:
             raise ValueError("Select a snapshot destination folder")
 
-        entry = self.entries[self.index]
-        camera_time = entry["camera_recorded_at"] or (
-            entry["recorded_at"] + timedelta(seconds=CAMERA_DELAY_SECONDS)
+        camera_time = entry.camera_recorded_at or (
+            entry.recorded_at + timedelta(seconds=CAMERA_DELAY_SECONDS)
         )
         result = ManualSnapshotWriter(destination).save(
             self.current_reader.points,
-            entry["recorded_at"],
+            entry.recorded_at,
             self.current_reader.frame_type,
-            entry["image"].read_bytes(),
+            entry.camera_frame.read_bytes(),
             camera_time,
         )
         _put_status(self.pool, "snapshot_playback_snapshot_saved", result)
