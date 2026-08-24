@@ -4,9 +4,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from connection.connection_packages import MISSING_QUALITY, RadarObject
-import recording.point_cloud_reader as reader_module
-import recording.point_cloud_recorder as recorder_module
+from CONNECTION.connection_packages import MISSING_QUALITY, RadarObject
+import CAPTURE.point_cloud_reader as reader_module
+import CAPTURE.point_cloud_recorder as recorder_module
 
 
 class FakePointCloud:

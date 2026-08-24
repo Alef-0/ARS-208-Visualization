@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 import unittest
 
-from graph.graph_filter import Filter_graph
-from interface.filter_schema import (
+from GRAPH.graph_filter import Filter_graph
+from INTERFACE.filter_schema import (
     AMBIGUITY_STATE_OPTIONS,
     DYNAMIC_PROPERTY_OPTIONS,
     INVALID_STATE_OPTIONS,

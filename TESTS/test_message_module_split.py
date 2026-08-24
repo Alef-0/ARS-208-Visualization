@@ -1,8 +1,8 @@
 import unittest
 
-from connection import connection_packages
-from connection.cluster_messages import read_701_cluster_list
-from connection.object_messages import (
+from CONNECTION import connection_packages
+from CONNECTION.cluster_messages import read_701_cluster_list
+from CONNECTION.object_messages import (
     OBJECT_CLASSES,
     Objects_messages,
     RadarObject,
@@ -12,11 +12,11 @@ from connection.object_messages import (
 
 class MessageModuleSplitTests(unittest.TestCase):
     def test_cluster_decoder_is_defined_in_cluster_module(self):
-        self.assertEqual(read_701_cluster_list.__module__, "connection.cluster_messages")
+        self.assertEqual(read_701_cluster_list.__module__, "CONNECTION.cluster_messages")
         self.assertIs(connection_packages.read_701_cluster_list, read_701_cluster_list)
 
     def test_object_decoder_is_defined_in_object_module(self):
-        self.assertEqual(read_60d_object_extended.__module__, "connection.object_messages")
+        self.assertEqual(read_60d_object_extended.__module__, "CONNECTION.object_messages")
         self.assertIs(connection_packages.read_60d_object_extended, read_60d_object_extended)
 
     def test_object_class_dictionary_matches_60d_values(self):

@@ -81,12 +81,12 @@ class SnapshotPlaybackController:
             self.snapshot_folder = value.get("snapshot_folder")
             self._set_resolution(value)
             self.active = True
-            self.paused = True
+            self.paused = False
             self.stop_requested = False
             self.index = 0
             _put_status(self.pool, "snapshot_playback_state", {
                 "active": True,
-                "paused": True,
+                "paused": False,
                 "current": 1,
                 "total": len(self.entries),
                 "folder": str(root.resolve()),
@@ -118,6 +118,7 @@ class SnapshotPlaybackController:
                             self.index += 1
                             self._render()
                         break
+                    self._process_window_events()
 
             _put_status(self.pool, "snapshot_playback_state", {
                 "active": False,
@@ -234,6 +235,12 @@ class SnapshotPlaybackController:
             "current": self.index + 1 if self.entries else 0,
             "total": len(self.entries),
         })
+
+    @staticmethod
+    def _process_window_events():
+        # OpenCV dispatches mouse callbacks from waitKey. Keep pumping its event
+        # queue even while playback is paused so radar clicks are handled now.
+        cv.waitKey(1)
 
     def _save_snapshot(self, folder):
         if not self.entries:

@@ -191,9 +191,7 @@ class Graph_radar():
         if object_class:
             details += f" | object_class={object_class}"
 
-        print("========== RADAR POINT ==========")
-        print(details)
-        print("=================================")
+        print(f"[RADAR POINT] {details}")
 
     def show_points(self, x_group, y_group, colors, points=None):
         new_img = self.base_image.copy()

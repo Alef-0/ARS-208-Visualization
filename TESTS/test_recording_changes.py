@@ -7,11 +7,11 @@ import unittest
 
 import numpy as np
 
-from connection.connection_packages import MISSING_QUALITY, RadarPoint
-import recording.camera_snapshot_recorder as camera_module
-import recording.point_cloud_reader as reader_module
-import recording.point_cloud_recorder as recorder_module
-from recording.playback import load_recording_entries
+from CONNECTION.connection_packages import MISSING_QUALITY, RadarPoint
+import CAPTURE.camera_snapshot_recorder as camera_module
+import CAPTURE.point_cloud_reader as reader_module
+import CAPTURE.point_cloud_recorder as recorder_module
+from CAPTURE.playback import load_recording_entries
 
 
 class FakeWriterCloud:
