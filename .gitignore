@@ -206,6 +206,9 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Random things
 .vscode/browse*
 Recordings01_0608/*
 /August13/*
+/recordings/*
+!/recordings/.gitkeep
