@@ -187,6 +187,43 @@ class RecordingChangesTests(unittest.TestCase):
         self.assertEqual(len(files), 2)
         self.assertEqual(len(saved), 2)
 
+    def test_calibration_camera_recording_writes_adjusted_timestamp_manifest(self):
+        original_imwrite = camera_module.cv.imwrite
+
+        def fake_imwrite(path, _frame):
+            Path(path).write_bytes(b"jpg")
+            return True
+
+        camera_module.cv.imwrite = fake_imwrite
+        try:
+            with TemporaryDirectory() as folder:
+                recorder = camera_module.CameraSnapshotRecorder()
+                recorder.start(
+                    {4: folder},
+                    calibration=True,
+                    latency_adjustment_ms=250,
+                )
+                captured_at = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+                recorder.submit(
+                    np.zeros((2, 2, 3), dtype=np.uint8),
+                    captured_at=captured_at,
+                    monotonic_time=1.0,
+                )
+                recorder.stop()
+                metadata = json.loads(
+                    (Path(folder) / camera_module.CAMERA_TIMESTAMPS_NAME).read_text()
+                )
+        finally:
+            camera_module.cv.imwrite = original_imwrite
+
+        self.assertEqual(metadata[0]["camera_frame"], "camera_000001.jpg")
+        self.assertEqual(metadata[0]["captured_at"], captured_at.isoformat(timespec="microseconds"))
+        self.assertEqual(
+            metadata[0]["adjusted_at"],
+            "2026-08-26T11:59:59.750000+00:00",
+        )
+        self.assertEqual(metadata[0]["latency_adjustment_ms"], 250.0)
+
     def test_playback_loader_supports_new_and_legacy_metadata(self):
         timestamp = "2026-07-29T12:00:00+00:00"
         with TemporaryDirectory() as folder:

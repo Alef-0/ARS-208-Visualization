@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timedelta
+import json
 from pathlib import Path
 import queue
 import threading
@@ -10,6 +11,7 @@ import numpy as np
 
 
 SNAPSHOT_INTERVAL_SECONDS = 0.25
+CAMERA_TIMESTAMPS_NAME = "camera_timestamps.json"
 _STOP = object()
 
 
@@ -28,8 +30,18 @@ class CameraSnapshotRecorder:
         self._thread: threading.Thread | None = None
         self._last_snapshot_time: float | None = None
         self._frame_number = 0
+        self._calibration_metadata_paths: tuple[Path, ...] = ()
+        self._calibration_records: list[dict] = []
+        self._latency_adjustment_ms = 0.0
+        self._calibration = False
 
-    def start(self, folders: Mapping[int, str]) -> None:
+    def start(
+        self,
+        folders: Mapping[int, str],
+        *,
+        calibration: bool = False,
+        latency_adjustment_ms: float = 0.0,
+    ) -> None:
         if self.active:
             raise RuntimeError("Camera snapshot recording is already active")
         selected = {int(channel): Path(folder).expanduser() for channel, folder in folders.items()}
@@ -44,6 +56,15 @@ class CameraSnapshotRecorder:
         self._last_snapshot_time = None
         self._frame_number = 0
         self.error = None
+        self._calibration_records = []
+        self._latency_adjustment_ms = float(latency_adjustment_ms)
+        self._calibration = calibration
+        self._calibration_metadata_paths = (
+            tuple(folder / CAMERA_TIMESTAMPS_NAME for folder in selected.values())
+            if calibration
+            else ()
+        )
+        self._write_calibration_metadata()
         self.active = True
         self._thread = threading.Thread(
             target=self._write_loop,
@@ -79,6 +100,9 @@ class CameraSnapshotRecorder:
     def poll_error(self) -> Exception | None:
         return self.error
 
+    def set_latency_adjustment_ms(self, value: float) -> None:
+        self._latency_adjustment_ms = float(value)
+
     def stop(self) -> int:
         if not self.active:
             return self._frame_number
@@ -112,12 +136,37 @@ class CameraSnapshotRecorder:
                         if not cv.imwrite(str(path), frame):
                             raise RuntimeError(f"Could not save camera snapshot: {path}")
                         files[channel] = filename
+                    self._record_calibration_timestamp(filename, captured_at)
                     if self.saved_callback:
                         self.saved_callback({
                             "files": files,
                             "captured_at": captured_at,
+                            "calibration": self._calibration,
                         })
                 finally:
                     self._queue.task_done()
         except Exception as error:
             self.error = error
+
+    def _record_calibration_timestamp(self, filename: str, captured_at: str) -> None:
+        if not self._calibration_metadata_paths:
+            return
+        adjusted_at = datetime.fromisoformat(captured_at) - timedelta(
+            milliseconds=self._latency_adjustment_ms
+        )
+        self._calibration_records.append({
+            "camera_frame": filename,
+            "captured_at": captured_at,
+            "adjusted_at": adjusted_at.isoformat(timespec="microseconds"),
+            "latency_adjustment_ms": self._latency_adjustment_ms,
+        })
+        self._write_calibration_metadata()
+
+    def _write_calibration_metadata(self) -> None:
+        for path in self._calibration_metadata_paths:
+            temporary_path = path.with_suffix(path.suffix + ".tmp")
+            temporary_path.write_text(
+                json.dumps(self._calibration_records, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            temporary_path.replace(path)

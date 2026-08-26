@@ -41,8 +41,13 @@ def _load_json(path: Path, expected_type: type):
 class ManualSnapshotWriter:
     """Append a radar/image pair using the normal recording folder structure."""
 
-    def __init__(self, folder: str | Path):
+    def __init__(
+        self,
+        folder: str | Path,
+        camera_delay_seconds: float = CAMERA_DELAY_SECONDS,
+    ):
         self.folder = Path(folder).expanduser()
+        self.camera_delay_seconds = float(camera_delay_seconds)
         self.metadata_path = self.folder / RECORDING_METADATA_NAME
         self.timestamps_path = self.folder / TIMESTAMPS_METADATA_NAME
 
@@ -101,7 +106,9 @@ class ManualSnapshotWriter:
         camera_name = f"camera_{index:06d}.jpg"
         point_cloud_path = self.folder / point_cloud_name
         camera_path = self.folder / camera_name
-        target_radar_time = camera_recorded_at - timedelta(seconds=CAMERA_DELAY_SECONDS)
+        target_radar_time = camera_recorded_at - timedelta(
+            seconds=self.camera_delay_seconds
+        )
         synchronization_error_ms = (
             radar_recorded_at - target_radar_time
         ).total_seconds() * 1000.0
@@ -122,7 +129,7 @@ class ManualSnapshotWriter:
                 "frame_type": frame_type,
                 "camera_frame": camera_name,
                 "camera_recorded_at": camera_timestamp,
-                "camera_delay_ms": int(CAMERA_DELAY_SECONDS * 1000),
+                "camera_delay_ms": round(self.camera_delay_seconds * 1000, 3),
                 "synchronization_error_ms": round(synchronization_error_ms, 3),
             })
             _replace_json(self.timestamps_path, timestamps)

@@ -40,6 +40,12 @@ class SnapshotPlaybackController:
         self.stop_requested = False
         self.width = DEFAULT_PLAYBACK_WIDTH
         self.height = DEFAULT_PLAYBACK_HEIGHT
+        try:
+            self.camera_delay_seconds = float(
+                initial_values.get("camera_latency_adjustment", 250)
+            ) / 1000.0
+        except (TypeError, ValueError):
+            self.camera_delay_seconds = CAMERA_DELAY_SECONDS
         self.entries = []
         self.index = 0
         self.current_reader = None
@@ -62,6 +68,8 @@ class SnapshotPlaybackController:
                 self._set_resolution(value)
             elif event == "point_cutoff":
                 self.graph.set_distance_cutoff(value.get("distance", 15.0))
+            elif event == "camera_latency_adjustment":
+                self._set_camera_latency_adjustment(value)
             elif isinstance(event, str) and event.startswith("filter"):
                 self.filters.update_values(event, value)
         self._close_windows()
@@ -74,6 +82,9 @@ class SnapshotPlaybackController:
         self.width, self.height = width, height
         if self.active and self.entries:
             self._render()
+
+    def _set_camera_latency_adjustment(self, value):
+        self.camera_delay_seconds = float(value.get("latency_adjustment_ms")) / 1000.0
 
     def _play(self, value):
         try:
@@ -186,6 +197,11 @@ class SnapshotPlaybackController:
                     self._render()
             except Exception as error:
                 _put_status(self.pool, "point_cutoff_error", str(error))
+        elif event == "camera_latency_adjustment":
+            try:
+                self._set_camera_latency_adjustment(value)
+            except Exception as error:
+                _put_status(self.pool, "camera_latency_error", str(error))
         elif isinstance(event, str) and event.startswith("filter"):
             self.filters.update_values(event, value)
             self._render()
@@ -259,9 +275,12 @@ class SnapshotPlaybackController:
             raise ValueError("Select a snapshot destination folder")
 
         camera_time = entry.camera_recorded_at or (
-            entry.recorded_at + timedelta(seconds=CAMERA_DELAY_SECONDS)
+            entry.recorded_at + timedelta(seconds=self.camera_delay_seconds)
         )
-        result = ManualSnapshotWriter(destination).save(
+        result = ManualSnapshotWriter(
+            destination,
+            camera_delay_seconds=self.camera_delay_seconds,
+        ).save(
             self.current_reader.points,
             entry.recorded_at,
             self.current_reader.frame_type,

@@ -1,7 +1,6 @@
 from collections import deque
 from datetime import datetime, timedelta
 import json
-import os
 from pathlib import Path
 import queue
 import threading
@@ -101,29 +100,7 @@ OBJECT_PCD_TYPES = LEGACY_OBJECT_PCD_TYPES + (
 PCD_FIELDS = CLUSTER_PCD_FIELDS
 PCD_TYPES = CLUSTER_PCD_TYPES
 RADAR_LETTERS = {1: "A", 2: "B", 3: "C"}
-DEFAULT_CAMERA_DELAY_MILLISECONDS = 250.0
-CAMERA_DELAY_ENVIRONMENT_VARIABLE = "SEGCOM_CAMERA_DELAY_MS"
-
-
-def _camera_delay_seconds() -> float:
-    configured = os.getenv(
-        CAMERA_DELAY_ENVIRONMENT_VARIABLE,
-        str(DEFAULT_CAMERA_DELAY_MILLISECONDS),
-    )
-    try:
-        milliseconds = float(configured)
-        if milliseconds < 0:
-            raise ValueError
-    except ValueError:
-        print(
-            f"[DEBUG][CAMERA] Ignoring invalid {CAMERA_DELAY_ENVIRONMENT_VARIABLE}="
-            f"{configured!r}; using {DEFAULT_CAMERA_DELAY_MILLISECONDS:.0f} ms"
-        )
-        milliseconds = DEFAULT_CAMERA_DELAY_MILLISECONDS
-    return milliseconds / 1000.0
-
-
-CAMERA_DELAY_SECONDS = _camera_delay_seconds()
+CAMERA_DELAY_SECONDS = 0.250
 METADATA_FLUSH_SECONDS = 1.0
 RECORDING_METADATA_NAME = "recording.json"
 TIMESTAMPS_METADATA_NAME = "timestamps.json"
@@ -219,6 +196,7 @@ class PointCloudRecorder:
         timestamp: str,
         progress_callback: Callable[[int, int], None] | None = None,
         queue_size: int = 64,
+        camera_delay_seconds: float = CAMERA_DELAY_SECONDS,
     ):
         if PointCloud is None:
             raise RuntimeError(
@@ -234,6 +212,7 @@ class PointCloudRecorder:
         self.timestamps_path = self.folder / TIMESTAMPS_METADATA_NAME
         self.metadata_path = self.folder / RECORDING_METADATA_NAME
         self.progress_callback = progress_callback
+        self.camera_delay_seconds = float(camera_delay_seconds)
         self.frames_written = 0
         self.error: Exception | None = None
         self._timestamps: dict[str, str] = {}
@@ -274,11 +253,13 @@ class PointCloudRecorder:
 
     def add_camera_snapshot(self, filename: str, recorded_at: datetime | str) -> None:
         camera_time = _datetime(recorded_at)
-        target_time = camera_time - timedelta(seconds=CAMERA_DELAY_SECONDS)
+        delay_seconds = self.camera_delay_seconds
+        target_time = camera_time - timedelta(seconds=delay_seconds)
         snapshot = {
             "camera_frame": Path(filename).name,
             "camera_recorded_at": _timestamp(camera_time),
             "target_recorded_at": _timestamp(target_time),
+            "camera_delay_ms": delay_seconds * 1000.0,
         }
         with self._metadata_lock:
             self._pending_camera_frames.append(snapshot)
@@ -319,7 +300,7 @@ class PointCloudRecorder:
             record.update({
                 "camera_frame": snapshot["camera_frame"],
                 "camera_recorded_at": snapshot["camera_recorded_at"],
-                "camera_delay_ms": int(CAMERA_DELAY_SECONDS * 1000),
+                "camera_delay_ms": round(snapshot["camera_delay_ms"], 3),
                 "synchronization_error_ms": round(
                     (record_time - target).total_seconds() * 1000.0,
                     3,
@@ -327,6 +308,9 @@ class PointCloudRecorder:
             })
             self._pending_camera_frames.popleft()
             self._metadata_dirty = True
+
+    def set_camera_delay_seconds(self, value: float) -> None:
+        self.camera_delay_seconds = float(value)
 
     def _write_loop(self) -> None:
         try:
@@ -407,9 +391,14 @@ class PointCloudRecorder:
 
 
 class RadarRecordingSession:
-    def __init__(self, progress_callback: Callable[[int, int], None] | None = None):
+    def __init__(
+        self,
+        progress_callback: Callable[[int, int], None] | None = None,
+        camera_delay_seconds: float = CAMERA_DELAY_SECONDS,
+    ):
         self.recorders: dict[int, PointCloudRecorder] = {}
         self.progress_callback = progress_callback
+        self.camera_delay_seconds = float(camera_delay_seconds)
 
     @property
     def active(self) -> bool:
@@ -440,6 +429,7 @@ class RadarRecordingSession:
                     channel,
                     timestamp,
                     self.progress_callback,
+                    camera_delay_seconds=self.camera_delay_seconds,
                 )
         except Exception:
             for recorder in created.values():
@@ -473,6 +463,11 @@ class RadarRecordingSession:
             return False
         recorder.add_camera_snapshot(filename, recorded_at)
         return True
+
+    def set_camera_delay_seconds(self, value: float) -> None:
+        self.camera_delay_seconds = float(value)
+        for recorder in self.recorders.values():
+            recorder.set_camera_delay_seconds(value)
 
     def poll_error(self) -> Exception | None:
         for recorder in self.recorders.values():

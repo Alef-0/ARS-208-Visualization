@@ -13,6 +13,10 @@ class Configurations(BaseConfigurations):
         self.playback_width = 1280
         self.playback_height = 720
         self.point_cutoff = 15.0
+        self.calibration_camera = False
+        self.calibration_camera_pending = False
+        self.calibration_clock = False
+        self.calibration_recording = False
         super().__init__()
 
     def create_radar_division(self):
@@ -222,15 +226,54 @@ class Configurations(BaseConfigurations):
             [sg.Push(), sg.Text("15.0 m", key="point_cutoff_status"), sg.Push()],
         ]
 
+    @staticmethod
+    def _create_calibration_layout():
+        return [
+            [
+                sg.Push(),
+                sg.Text("rtspsrc latency (ms)"),
+                sg.Input("250", key="camera_pipeline_latency", size=(9, 1), justification="right"),
+                sg.Text("Program-wide pipeline latency adjustment (ms)"),
+                sg.Input("250", key="camera_latency_adjustment", size=(9, 1), justification="right"),
+                sg.Button("APPLY LATENCIES", key="calibration_latency_apply"),
+                sg.Push(),
+            ],
+            [sg.Push(), sg.Text("250 ms / 250 ms", key="calibration_latency_status"), sg.Push()],
+            [sg.HorizontalSeparator()],
+            [
+                sg.Push(),
+                sg.Button(
+                    "OPEN CALIBRATION CAMERA 4",
+                    key="calibration_camera_toggle",
+                    button_color=("white", "green"),
+                ),
+                sg.Button(
+                    "START FULLSCREEN CLOCK",
+                    key="calibration_clock_start",
+                    button_color=("white", "green"),
+                ),
+                sg.Push(),
+            ],
+            [
+                sg.Text(
+                    "The fullscreen clock records after 3 seconds and stops recording when closed.",
+                    expand_x=True,
+                    justification="center",
+                )
+            ],
+            [sg.Push(), sg.Text("IDLE", key="calibration_status"), sg.Push()],
+        ]
+
     def create_radar_control(self):
         tabs = [[
             sg.Tab("Configurations", self.options),
             sg.Tab("Record", self._create_record_layout()),
             sg.Tab("Snapshots", self._create_snapshot_layout()),
-            sg.Tab("General Configurations", self._create_general_configurations_layout()),
+            sg.Tab("Display", self._create_general_configurations_layout()),
+            sg.Tab("Calibration", self._create_calibration_layout()),
         ]]
         self.radar_control = sg.Frame(
-            "Radar Control",
+            "General Control",
             [[sg.TabGroup(tabs, expand_x=True, pad=(0, 0))]],
             expand_x=True,
             title_location=sg.TITLE_LOCATION_TOP,
@@ -243,6 +286,8 @@ class Configurations(BaseConfigurations):
             or self.playback_pending
             or self.snapshot_playback
             or self.snapshot_playback_pending
+            or self.calibration_camera
+            or self.calibration_camera_pending
         )
         recording_inputs_disabled = self.recording or self.recording_pending or live_blocked
         for key in ("record_folder", "record_browse", "record_radar_1", "record_radar_2", "record_radar_3"):
@@ -329,6 +374,20 @@ class Configurations(BaseConfigurations):
 
         for key in ("conn_radar", "conn_cam"):
             self.window[key].update(disabled=live_blocked or self.snapshot_pending)
+        for channel in range(1, 4):
+            self.window[f"choose_{channel}"].update(
+                disabled=self.calibration_camera or self.calibration_camera_pending
+            )
+        self.window["calibration_camera_toggle"].update(
+            disabled=(
+                self.calibration_camera_pending
+                or (self.recording_pending and not self.calibration_camera)
+                or self.snapshot_pending
+            )
+        )
+        self.window["calibration_clock_start"].update(
+            disabled=self.calibration_clock
+        )
 
     def change_received_messages(self, message_ids):
         messages = ", ".join(f"0x{message_id:03X}" for message_id in message_ids) or "--"
@@ -412,3 +471,51 @@ class Configurations(BaseConfigurations):
     def change_point_cutoff(self, cutoff):
         self.point_cutoff = cutoff
         self.window["point_cutoff_status"].update(f"{cutoff:.1f} m")
+
+    def set_calibration_camera_pending(self):
+        self.calibration_camera_pending = True
+        self.window["calibration_camera_toggle"].update("OPENING CAMERA 4...", disabled=True)
+        self.window["calibration_status"].update("CLOSING RADARS AND OPENING CAMERA 4")
+        self._refresh_mode_controls()
+
+    def change_calibration_camera(self, active):
+        self.calibration_camera = bool(active)
+        self.calibration_camera_pending = False
+        self.window["calibration_camera_toggle"].update(
+            "CLOSE CALIBRATION CAMERA 4" if active else "OPEN CALIBRATION CAMERA 4",
+            button_color=("white", "red" if active else "green"),
+        )
+        if active:
+            self.window["calibration_status"].update("CAMERA 4 OPEN")
+        elif not self.calibration_recording:
+            self.window["calibration_status"].update("IDLE")
+        self._refresh_mode_controls()
+
+    def change_calibration_clock(self, active):
+        self.calibration_clock = bool(active)
+        self.window["calibration_clock_start"].update(
+            "CLOCK ACTIVE" if active else "START FULLSCREEN CLOCK",
+            disabled=active,
+            button_color=("white", "red" if active else "green"),
+        )
+        self._refresh_mode_controls()
+
+    def change_calibration_recording(self, payload):
+        self.calibration_recording = bool(payload.get("active"))
+        if self.calibration_recording:
+            self.window["calibration_status"].update(
+                f"RECORDING CAMERA 4 — {payload.get('folder', '')}"
+            )
+        else:
+            count = payload.get("count", 0)
+            self.window["calibration_status"].update(
+                f"SAVED {count} CAMERA FRAMES" if count else "CAMERA 4 OPEN"
+            )
+
+    def change_calibration_latencies(self, pipeline_latency_ms, adjustment_ms):
+        self.window["calibration_latency_status"].update(
+            f"{pipeline_latency_ms} ms / {adjustment_ms:g} ms"
+        )
+
+    def show_calibration_error(self, message):
+        sg.popup_error(message, title="Calibration error")
