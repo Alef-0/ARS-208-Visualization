@@ -1,4 +1,3 @@
-from datetime import datetime
 import queue
 import signal
 import socket
@@ -10,6 +9,11 @@ import gi
 import numpy as np
 
 from CAPTURE import CameraSnapshotRecorder
+from CAMERA.camera_pipeline_policy import (
+    FrameTimestampPolicy,
+    available_decoder_backends,
+    build_camera_pipeline,
+)
 
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst
@@ -22,6 +26,9 @@ DEFAULT_DISPLAY_HEIGHT = 720
 MAX_PIPELINE_ATTEMPTS = 3
 FIRST_FRAME_TIMEOUT_SECONDS = 5.0
 PIPELINE_RETRY_DELAY_SECONDS = 0.5
+TIMESTAMP_WARNING_INTERVAL_SECONDS = 5.0
+TIMESTAMP_DIAGNOSTIC_INTERVAL_SECONDS = 60.0
+MANUAL_SNAPSHOT_TIMESTAMP_TIMEOUT_SECONDS = 5.0
 _RESULT_FAILURE = "failure"
 _RESULT_RESTART = "restart"
 _RESULT_CLOSED = "closed"
@@ -45,8 +52,15 @@ class GStreamerPipeline:
         self.display_width = DEFAULT_DISPLAY_WIDTH
         self.display_height = DEFAULT_DISPLAY_HEIGHT
         self.snapshot_recorder = CameraSnapshotRecorder(self._report_snapshot)
+        self.timestamp_policy = FrameTimestampPolicy()
+        self.decoder_backends = available_decoder_backends()
+        self.decoder_backend_index = 0
+        self._last_timestamp_warning = 0.0
+        self._last_timestamp_diagnostic = 0.0
         self._manual_snapshot_lock = threading.Lock()
         self._pending_manual_snapshot: dict | None = None
+
+        self.counter = 0
 
     @staticmethod
     def create_url(channel):
@@ -143,6 +157,7 @@ class GStreamerPipeline:
 
         request = dict(value)
         request["restore_channel"] = self.channel
+        request["queued_at"] = time.monotonic()
         with self._manual_snapshot_lock:
             if self._pending_manual_snapshot is not None:
                 self._put_status(
@@ -210,13 +225,13 @@ class GStreamerPipeline:
         buffer = sample.get_buffer()
         success, map_info = buffer.map(Gst.MapFlags.READ)
         if not success:
-            return None, None
+            return None
         try:
             caps = sample.get_caps().get_structure(0)
             width = caps.get_value("width")
             height = caps.get_value("height")
             frame = np.frombuffer(map_info.data, dtype=np.uint8).reshape(height, width, 3).copy()
-            return frame, datetime.now().astimezone()
+            return frame
         finally:
             buffer.unmap(map_info)
 
@@ -224,7 +239,7 @@ class GStreamerPipeline:
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.ERROR
-        frame, _ = self._sample_to_frame(sample)
+        frame = self._sample_to_frame(sample)
         if frame is None:
             return Gst.FlowReturn.ERROR
         try:
@@ -241,13 +256,59 @@ class GStreamerPipeline:
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.ERROR
-        frame, captured_at = self._sample_to_frame(sample)
-        if frame is None or captured_at is None:
+        frame = self._sample_to_frame(sample)
+        if frame is None:
             return Gst.FlowReturn.ERROR
+        first_frame = not self.first_frame_received
         self.first_frame_received = True
-        self.snapshot_recorder.submit(frame, captured_at=captured_at)
-        self._emit_manual_snapshot(frame, captured_at)
+        if first_frame:
+            print(
+                f"[DEBUG][CAMERA] Camera channel {self.channel} is using the "
+                f"{self.current_decoder_backend.name} decoder"
+            )
+
+        timestamp = self.timestamp_policy.timestamp_for_sample(sample)
+        if not timestamp.valid:
+            self._reject_synchronized_frame(timestamp.reason or "unknown timestamp error")
+            return Gst.FlowReturn.OK
+
+        self._report_timestamp_diagnostic(timestamp)
+        self.snapshot_recorder.submit(frame, captured_at=timestamp.captured_at)
+        self._emit_manual_snapshot(frame, timestamp.captured_at)
         return Gst.FlowReturn.OK
+
+    def _report_timestamp_diagnostic(self, timestamp):
+        now = time.monotonic()
+        if now - self._last_timestamp_diagnostic < TIMESTAMP_DIAGNOSTIC_INTERVAL_SECONDS:
+            return
+        details = [
+            "appsink receipt minus mapped PTS="
+            f"{timestamp.receipt_offset_seconds * 1000.0:.1f} ms"
+        ]
+        if timestamp.reference_clock_offset_seconds is not None:
+            details.append(
+                "DVR clock offset="
+                f"{timestamp.reference_clock_offset_seconds:+.3f} s"
+            )
+        if timestamp.reference_warning:
+            details.append(timestamp.reference_warning)
+        print(f"[DEBUG][CAMERA] Timestamp diagnostic: {', '.join(details)}")
+        self._last_timestamp_diagnostic = now
+
+    def _reject_synchronized_frame(self, reason):
+        now = time.monotonic()
+        if now - self._last_timestamp_warning >= TIMESTAMP_WARNING_INTERVAL_SECONDS:
+            print(f"[DEBUG][CAMERA] Skipping unsynchronized camera frame: {reason}", self.counter); self.counter = 0
+            self._put_status("camera_timestamp_warning", reason)
+            self._last_timestamp_warning = now
+        else: self.counter += 1
+        with self._manual_snapshot_lock:
+            request = self._pending_manual_snapshot
+            queued_at = request.get("queued_at", now) if request is not None else now
+        if request is not None and now - queued_at >= MANUAL_SNAPSHOT_TIMESTAMP_TIMEOUT_SECONDS:
+            self._fail_manual_snapshot(
+                "Camera frames did not contain a valid synchronization timestamp"
+            )
 
     def on_message(self, _bus, message):
         if message.type in (Gst.MessageType.EOS, Gst.MessageType.ERROR):
@@ -286,8 +347,8 @@ class GStreamerPipeline:
                     else:
                         try:
                             with socket.create_connection(("192.168.1.108", 554), timeout=2):
-                                self.connected = True
-                                self._put_status("change_cam", True)
+                                self.connected = self.reset_decoder_selection()
+                                self._put_status("change_cam", self.connected)
                         except OSError:
                             self._put_status("change_cam", False)
                 elif event == "record_start":
@@ -342,6 +403,32 @@ class GStreamerPipeline:
             except queue.Empty:
                 return
 
+    @property
+    def current_decoder_backend(self):
+        return self.decoder_backends[self.decoder_backend_index]
+
+    def reset_decoder_selection(self):
+        try:
+            self.decoder_backends = available_decoder_backends()
+        except RuntimeError as error:
+            self._put_status("camera_recording_error", str(error))
+            print(f"[DEBUG][CAMERA] {error}")
+            return False
+        self.decoder_backend_index = 0
+        return True
+
+    def advance_decoder_backend(self):
+        next_index = self.decoder_backend_index + 1
+        if next_index >= len(self.decoder_backends):
+            return False
+        previous = self.current_decoder_backend.name
+        self.decoder_backend_index = next_index
+        print(
+            f"[DEBUG][CAMERA] {previous} decoder failed; trying "
+            f"{self.current_decoder_backend.name}"
+        )
+        return True
+
     def _remove_sources(self):
         for source_id in self.source_ids:
             if source_id:
@@ -357,14 +444,11 @@ class GStreamerPipeline:
             pass
 
     def run(self):
-        pipeline_str = (
-            f"rtspsrc name=source latency={CAMERA_PIPELINE_LATENCY_MS} protocols=tcp ! "
-            "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! tee name=video "
-            "video. ! queue leaky=downstream max-size-buffers=1 ! videoscale ! "
-            f"video/x-raw,format=BGR,width={self.display_width},height={self.display_height} ! "
-            "appsink name=display_sink emit-signals=true sync=false max-buffers=1 drop=true "
-            "video. ! queue leaky=downstream max-size-buffers=1 ! video/x-raw,format=BGR ! "
-            "appsink name=capture_sink emit-signals=true sync=false max-buffers=1 drop=true"
+        pipeline_str = build_camera_pipeline(
+            self.current_decoder_backend,
+            display_width=self.display_width,
+            display_height=self.display_height,
+            latency_ms=CAMERA_PIPELINE_LATENCY_MS,
         )
         bus = None
         self._clear_frames()
@@ -378,6 +462,8 @@ class GStreamerPipeline:
             display_sink = self.pipeline.get_by_name("display_sink")
             capture_sink = self.pipeline.get_by_name("capture_sink")
             source.set_property("location", self.create_url(self.channel))
+            self.timestamp_policy.reset(self.pipeline)
+            self.timestamp_policy.attach_rtsp_source(source)
             display_sink.connect("new-sample", self.on_new_display_sample)
             capture_sink.connect("new-sample", self.on_new_capture_sample)
             bus = self.pipeline.get_bus()
@@ -389,6 +475,7 @@ class GStreamerPipeline:
                 GLib.timeout_add(10, self.process_commands),
                 GLib.timeout_add(10, self.display_latest_frame),
                 GLib.timeout_add(100, self.check_first_frame),
+                GLib.timeout_add(500, self.timestamp_policy.check_rtcp_stats),
             ]
 
             if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
@@ -433,6 +520,10 @@ def gstreamer_main(connection, pool, shutdown_event):
                 failed_attempts = 0
                 continue
             if shutdown_event.is_set() or not pipeline.connected:
+                continue
+
+            if not received_frame and pipeline.advance_decoder_backend():
+                failed_attempts = 0
                 continue
 
             if received_frame:

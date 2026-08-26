@@ -1,6 +1,7 @@
 from collections import deque
 from datetime import datetime, timedelta
 import json
+import os
 from pathlib import Path
 import queue
 import threading
@@ -100,7 +101,29 @@ OBJECT_PCD_TYPES = LEGACY_OBJECT_PCD_TYPES + (
 PCD_FIELDS = CLUSTER_PCD_FIELDS
 PCD_TYPES = CLUSTER_PCD_TYPES
 RADAR_LETTERS = {1: "A", 2: "B", 3: "C"}
-CAMERA_DELAY_SECONDS = 0.250
+DEFAULT_CAMERA_DELAY_MILLISECONDS = 250.0
+CAMERA_DELAY_ENVIRONMENT_VARIABLE = "SEGCOM_CAMERA_DELAY_MS"
+
+
+def _camera_delay_seconds() -> float:
+    configured = os.getenv(
+        CAMERA_DELAY_ENVIRONMENT_VARIABLE,
+        str(DEFAULT_CAMERA_DELAY_MILLISECONDS),
+    )
+    try:
+        milliseconds = float(configured)
+        if milliseconds < 0:
+            raise ValueError
+    except ValueError:
+        print(
+            f"[DEBUG][CAMERA] Ignoring invalid {CAMERA_DELAY_ENVIRONMENT_VARIABLE}="
+            f"{configured!r}; using {DEFAULT_CAMERA_DELAY_MILLISECONDS:.0f} ms"
+        )
+        milliseconds = DEFAULT_CAMERA_DELAY_MILLISECONDS
+    return milliseconds / 1000.0
+
+
+CAMERA_DELAY_SECONDS = _camera_delay_seconds()
 METADATA_FLUSH_SECONDS = 1.0
 RECORDING_METADATA_NAME = "recording.json"
 TIMESTAMPS_METADATA_NAME = "timestamps.json"
