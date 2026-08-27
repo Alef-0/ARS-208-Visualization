@@ -262,14 +262,14 @@ class Configurations(BaseConfigurations):
                 sg.Push(),
                 sg.Column([[
                     sg.Text("Camera latency"),
-                    sg.Input("250", key="camera_pipeline_latency", size=(9, 1), justification="right"),
+                    sg.Input("145", key="camera_pipeline_latency", size=(9, 1), justification="right"),
                     sg.Text("Pipeline Adjustment (ms)"),
-                    sg.Input("250", key="camera_latency_adjustment", size=(9, 1), justification="right"),
+                    sg.Input("145", key="camera_latency_adjustment", size=(9, 1), justification="right"),
                     sg.Button("APPLY LATENCIES", key="calibration_latency_apply"),
                 ]]),
                 sg.Push(),
             ],
-            [sg.Push(), sg.Text("250 ms / 250 ms", key="calibration_latency_status"), sg.Push()],
+            [sg.Push(), sg.Text("145 ms / 145 ms", key="calibration_latency_status"), sg.Push()],
             [sg.HorizontalSeparator()],
             [
                 sg.Push(),

@@ -138,7 +138,7 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
 
     try:
         camera_delay_seconds = float(
-            initial_values.get("camera_latency_adjustment", 250)
+            initial_values.get("camera_latency_adjustment", 145)
         ) / 1000.0
     except (TypeError, ValueError):
         camera_delay_seconds = CAMERA_DELAY_SECONDS

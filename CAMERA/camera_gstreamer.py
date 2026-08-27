@@ -20,7 +20,7 @@ from gi.repository import GLib, Gst
 
 Gst.init(None)
 
-CAMERA_PIPELINE_LATENCY_MS = 250
+CAMERA_PIPELINE_LATENCY_MS = 145
 DEFAULT_DISPLAY_WIDTH = 1280
 DEFAULT_DISPLAY_HEIGHT = 720
 MAX_PIPELINE_ATTEMPTS = 3
@@ -52,7 +52,7 @@ class GStreamerPipeline:
         self.display_width = DEFAULT_DISPLAY_WIDTH
         self.display_height = DEFAULT_DISPLAY_HEIGHT
         self.pipeline_latency_ms = CAMERA_PIPELINE_LATENCY_MS
-        self.latency_adjustment_ms = 250.0
+        self.latency_adjustment_ms = 145.0
         self.recording_interval_ms = 250.0
         self.calibration_mode = False
         self.calibration_recording = False

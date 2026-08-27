@@ -61,7 +61,7 @@ class SnapshotPlaybackController:
         self.height = DEFAULT_PLAYBACK_HEIGHT
         try:
             self.camera_delay_seconds = float(
-                initial_values.get("camera_latency_adjustment", 250)
+                initial_values.get("camera_latency_adjustment", 145)
             ) / 1000.0
         except (TypeError, ValueError):
             self.camera_delay_seconds = CAMERA_DELAY_SECONDS
