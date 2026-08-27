@@ -7,8 +7,8 @@ import unittest
 
 import numpy as np
 
-from connection.connection_packages import MISSING_QUALITY, RadarObject, RadarPoint
-import recording.point_cloud_recorder as recorder_module
+from CONNECTION.connection_packages import MISSING_QUALITY, RadarObject, RadarPoint
+import CAPTURE.point_cloud_recorder as recorder_module
 
 
 class FakePointCloud:

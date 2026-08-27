@@ -136,6 +136,13 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
         if isinstance(key, str) and key.startswith("choose_") and selected
     )
 
+    try:
+        camera_delay_seconds = float(
+            initial_values.get("camera_latency_adjustment", 145)
+        ) / 1000.0
+    except (TypeError, ValueError):
+        camera_delay_seconds = CAMERA_DELAY_SECONDS
+
     connection = Can_Connection()
     cluster_messages = {channel: Clusters_messages() for channel in RADAR_CHANNELS}
     object_messages = {channel: Objects_messages() for channel in RADAR_CHANNELS}
@@ -144,7 +151,13 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
     frame_history = {channel: deque() for channel in RADAR_CHANNELS}
     recording_ready: dict[int, bool] = {}
     received_message_ids: set[int] = set()
-    graph = Graph_radar(initial_values.get("point_cutoff", 15.0))
+    graph = Graph_radar(
+        initial_values.get("point_cutoff", 15.0),
+        initial_values.get("graph_width", 800),
+        initial_values.get("graph_height", 600),
+        initial_values.get("graph_x_range", 15.0),
+        initial_values.get("graph_y_range", 15.0),
+    )
     filters = Filter_graph(initial_values)
 
     def report_progress(channel, count):
@@ -156,7 +169,7 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
         received_message_ids.add(can_id)
         _put_status(pool, "received_messages", tuple(sorted(received_message_ids)))
 
-    recording = RadarRecordingSession(report_progress)
+    recording = RadarRecordingSession(report_progress, camera_delay_seconds)
 
     def frame_messages(channel, frame_type):
         return cluster_messages[channel] if frame_type == "cluster" else object_messages[channel]
@@ -215,7 +228,7 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                 raise ValueError(f"Unsupported radar group: {channel}")
 
             camera_recorded_at = datetime.fromisoformat(values["captured_at"])
-            target_time = camera_recorded_at - timedelta(seconds=CAMERA_DELAY_SECONDS)
+            target_time = camera_recorded_at - timedelta(seconds=camera_delay_seconds)
             history = frame_history[channel]
             if not history:
                 raise RuntimeError(
@@ -235,7 +248,10 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                     f"({sync_error * 1000:.1f} ms difference)"
                 )
 
-            result = ManualSnapshotWriter(values["folder"]).save(
+            result = ManualSnapshotWriter(
+                values["folder"],
+                camera_delay_seconds=camera_delay_seconds,
+            ).save(
                 frame.points,
                 frame.recorded_at,
                 frame.frame_type,
@@ -274,14 +290,6 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                     elif event == "choose":
                         radar_choice = values
                     elif event == "record_start":
-                        if not connection.connected:
-                            _put_status(
-                                pool,
-                                "recording_error",
-                                "Connect the radar before starting a recording",
-                                critical=True,
-                            )
-                            continue
                         try:
                             folders = recording.start(values["folder"], values["channels"])
                             recording_ready.clear()
@@ -308,6 +316,27 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                         save_manual_snapshot(values)
                     elif event == "point_cutoff":
                         graph.set_distance_cutoff(values.get("distance", 15.0))
+                    elif event == "graph_resolution":
+                        graph.set_resolution(
+                            values.get("width", 800), values.get("height", 600)
+                        )
+                    elif event == "graph_range":
+                        graph.set_range(
+                            values.get("x_range", 15.0),
+                            values.get("y_range", 15.0),
+                        )
+                    elif event == "camera_latency_adjustment":
+                        try:
+                            camera_delay_seconds = float(
+                                values.get("latency_adjustment_ms")
+                            ) / 1000.0
+                            recording.set_camera_delay_seconds(camera_delay_seconds)
+                        except (AttributeError, TypeError, ValueError):
+                            _put_status(
+                                pool,
+                                "camera_latency_error",
+                                "Program-wide pipeline latency adjustment must be numeric",
+                            )
                     elif isinstance(event, str) and event.startswith("filter"):
                         filters.update_values(event, values)
             except (EOFError, OSError):

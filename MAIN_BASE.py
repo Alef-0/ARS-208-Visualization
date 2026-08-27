@@ -62,8 +62,25 @@ def _start_recording(values, config, send_radar):
         sg.popup_error("Select an existing destination folder", title="Recording error")
         return
     if not channels:
-        sg.popup_error("Select at least one radar to record", title="Recording error")
+        sg.popup_error("Select at least one group to record", title="Recording error")
         return
+    missing_devices = [
+        name
+        for name, connected in (
+            ("radar", config.connected_radar),
+            ("camera", config.connected_cam),
+        )
+        if not connected
+    ]
+    if missing_devices:
+        missing = " and ".join(missing_devices)
+        result = sg.popup_ok_cancel(
+            f"The {missing} {'are' if len(missing_devices) > 1 else 'is'} not open. "
+            "Continue anyway? Only data from open devices will be saved.",
+            title="Recording without all devices",
+        )
+        if result != "OK":
+            return
     config.set_recording_pending(True)
     send_radar.send(("record_start", {"folder": str(folder.resolve()), "channels": channels}))
 
@@ -216,6 +233,18 @@ def _handle_gui_event(
                 send_cam,
                 send_playback,
             )
+        case "playback_stop":
+            if config.playback:
+                send_playback.send(("playback_stop", None))
+        case "playback_restart":
+            if config.playback:
+                send_playback.send(("playback_restart", None))
+        case "playback_previous_5s":
+            if config.playback:
+                send_playback.send(("playback_seek", {"seconds": -5.0}))
+        case "playback_next_5s":
+            if config.playback:
+                send_playback.send(("playback_seek", {"seconds": 5.0}))
         case key if isinstance(key, str) and key.startswith("filter"):
             if event == RCS_KEY:
                 config.window["RCS_FILTER_VALUE"].update(f"{values[RCS_KEY]:.1f}")

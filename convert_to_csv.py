@@ -1,11 +1,24 @@
 #!/usr/bin/env python3
-"""Convert Segcom radar recording folders from PCD to CSV.
+"""Convert Segcom-Sensors_GUI recordings from PCD to CSV.
 
-Place this script in a directory containing one or more ``recording_*`` folders
-and run it with Python. Each recording is copied to a sibling folder ending in
-``-csv``. PCD frames are replaced by CSV files; JSON metadata and camera images
-are copied unchanged. A ``value_dictionaries.json`` file documents coded values,
-bit fields, units, and column meanings used by the CSV output.
+Usage:
+    python3 convert_pointcloud_to_csv_segcom.py recordings
+
+For:
+    recordings/
+
+the program creates a sibling directory:
+    recordings - CSV/
+
+The source tree is scanned recursively. The converted tree keeps the Segcom
+recording data:
+    - .pcd point clouds -> .csv
+    - camera images -> copied unchanged
+    - recording.json and timestamps.json -> copied with .pcd references changed
+      to .csv
+
+Unrelated files are ignored. Directory structure is preserved for every copied
+or converted recording file.
 
 Dependency:
     python -m pip install pypcd4 numpy
@@ -13,6 +26,7 @@ Dependency:
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import math
@@ -30,7 +44,6 @@ except ImportError as error:
     ) from error
 
 
-OUTPUT_SUFFIX = "-csv"
 DICTIONARY_FILENAME = "value_dictionaries.json"
 
 DYNAMIC_PROPERTY = {
@@ -268,73 +281,190 @@ def convert_pcd(source: Path, destination: Path) -> int:
     return len(values)
 
 
-def is_recording_folder(path: Path) -> bool:
-    return path.is_dir() and any(path.glob("*.pcd"))
+IMAGE_SUFFIXES = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp",
+}
+
+SEGCOM_METADATA_FILENAMES = {
+    "recording.json",
+    "timestamps.json",
+}
 
 
-def discover_recordings(root: Path) -> list[Path]:
-    recordings = [path for path in root.iterdir() if is_recording_folder(path)]
-    return sorted(recordings, key=lambda path: path.name)
+def is_image_file(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
 
 
-def copy_non_pcd_files(source: Path, destination: Path) -> None:
-    for entry in source.iterdir():
-        if entry.suffix.lower() == ".pcd":
-            continue
-        target = destination / entry.name
-        if entry.is_dir():
-            shutil.copytree(entry, target)
-        else:
-            shutil.copy2(entry, target)
+def is_segcom_metadata(path: Path) -> bool:
+    return path.is_file() and path.name.lower() in SEGCOM_METADATA_FILENAMES
 
 
-def convert_recording(source: Path) -> tuple[Path, int, int]:
-    destination = source.with_name(source.name + OUTPUT_SUFFIX)
-    if destination.exists():
-        raise FileExistsError(
-            f"Output already exists: {destination}. Remove or rename it before converting again."
+def replace_pcd_reference(value: Any) -> Any:
+    """Recursively replace PCD filenames in Segcom metadata with CSV filenames."""
+    if isinstance(value, dict):
+        converted: dict[Any, Any] = {}
+        for key, item in value.items():
+            if isinstance(key, str) and key.lower().endswith(".pcd"):
+                key = key[:-4] + ".csv"
+            converted[key] = replace_pcd_reference(item)
+        return converted
+
+    if isinstance(value, list):
+        return [replace_pcd_reference(item) for item in value]
+
+    if isinstance(value, str) and value.lower().endswith(".pcd"):
+        return value[:-4] + ".csv"
+
+    return value
+
+
+def copy_segcom_metadata(source: Path, destination: Path) -> None:
+    """Copy Segcom metadata while updating references to converted point clouds."""
+    data = json.loads(source.read_text(encoding="utf-8"))
+    converted = replace_pcd_reference(data)
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(converted, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def write_dictionary(directory: Path) -> None:
+    """Write the radar value dictionary beside converted CSV files."""
+    (directory / DICTIONARY_FILENAME).write_text(
+        json.dumps(VALUE_DICTIONARIES, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def convert_tree(
+    source_root: Path,
+    output_root: Path,
+) -> tuple[int, int, int, int, int]:
+    """Convert/copy the useful Segcom recording files recursively.
+
+    Returns:
+        (
+            pcd_directories,
+            pcd_files,
+            points,
+            images,
+            metadata_files,
         )
+    """
+    pcd_directories: set[Path] = set()
+    frame_count = 0
+    point_count = 0
+    image_count = 0
+    metadata_count = 0
 
-    destination.mkdir(parents=True)
-    try:
-        copy_non_pcd_files(source, destination)
-        frame_count = 0
-        point_count = 0
-        for pcd_path in sorted(source.glob("*.pcd")):
-            csv_path = destination / f"{pcd_path.stem}.csv"
-            point_count += convert_pcd(pcd_path, csv_path)
+    for source_path in sorted(
+        (path for path in source_root.rglob("*") if path.is_file()),
+        key=lambda path: str(path.relative_to(source_root)),
+    ):
+        relative_path = source_path.relative_to(source_root)
+        destination_path = output_root / relative_path
+        suffix = source_path.suffix.lower()
+
+        if suffix == ".pcd":
+            destination_path = destination_path.with_suffix(".csv")
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+
+            point_count += convert_pcd(source_path, destination_path)
             frame_count += 1
+            pcd_directories.add(destination_path.parent)
 
-        (destination / DICTIONARY_FILENAME).write_text(
-            json.dumps(VALUE_DICTIONARIES, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
+        elif is_image_file(source_path):
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, destination_path)
+            image_count += 1
+
+        elif is_segcom_metadata(source_path):
+            copy_segcom_metadata(source_path, destination_path)
+            metadata_count += 1
+
+    for directory in pcd_directories:
+        write_dictionary(directory)
+
+    return (
+        len(pcd_directories),
+        frame_count,
+        point_count,
+        image_count,
+        metadata_count,
+    )
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Recursively convert Segcom-Sensors_GUI recordings from PCD to CSV. "
+            "Camera images and Segcom recording metadata are preserved."
         )
-        return destination, frame_count, point_count
-    except Exception:
-        shutil.rmtree(destination, ignore_errors=True)
-        raise
+    )
+    parser.add_argument(
+        "source_folder",
+        type=Path,
+        help="Folder containing one or more Segcom recording directories.",
+    )
+    return parser.parse_args()
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parent
-    recordings = discover_recordings(root)
-    if not recordings:
-        print(f"No recording folders containing PCD files were found in {root}")
+    args = parse_arguments()
+    source_root = args.source_folder.expanduser().resolve()
+
+    if not source_root.exists():
+        print(f"Source folder does not exist: {source_root}", file=sys.stderr)
+        return 1
+
+    if not source_root.is_dir():
+        print(f"Source path is not a directory: {source_root}", file=sys.stderr)
+        return 1
+
+    output_root = source_root.with_name(f"{source_root.name} - CSV")
+
+    if output_root.exists():
+        print(
+            f"Output folder already exists: {output_root}\n"
+            "Remove or rename it before running the conversion again.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        (
+            directories,
+            frames,
+            points,
+            images,
+            metadata_files,
+        ) = convert_tree(source_root, output_root)
+    except Exception as error:
+        # Avoid leaving a partial conversion that looks complete.
+        if output_root.exists():
+            shutil.rmtree(output_root, ignore_errors=True)
+        print(f"Conversion failed: {error}", file=sys.stderr)
+        return 1
+
+    if frames == 0 and images == 0 and metadata_files == 0:
+        print(f"No Segcom recording files were found inside: {source_root}")
         return 0
 
-    failures = 0
-    for recording in recordings:
-        try:
-            destination, frames, points = convert_recording(recording)
-            print(
-                f"Converted {recording.name}: {frames} frame(s), {points} point(s) -> "
-                f"{destination.name}"
-            )
-        except Exception as error:
-            failures += 1
-            print(f"Failed to convert {recording.name}: {error}", file=sys.stderr)
-
-    return 1 if failures else 0
+    print(f"Output: {output_root}")
+    print(f"PCD folders: {directories}")
+    print(f"PCD files converted: {frames}")
+    print(f"Radar points converted: {points}")
+    print(f"Images copied: {images}")
+    print(f"Metadata files copied: {metadata_files}")
+    return 0
 
 
 if __name__ == "__main__":

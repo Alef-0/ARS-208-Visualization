@@ -1,6 +1,6 @@
 import unittest
 
-from connection.connection_packages import (
+from CONNECTION.connection_packages import (
     Clusters_messages,
     KINEMATIC_RMS_VALUES,
     MISSING_QUALITY,

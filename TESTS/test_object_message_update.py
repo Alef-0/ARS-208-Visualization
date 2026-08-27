@@ -2,7 +2,7 @@ from types import SimpleNamespace
 import math
 import unittest
 
-from connection.connection_packages import (
+from CONNECTION.connection_packages import (
     MISSING_QUALITY,
     ObjectStatus,
     Objects_messages,
@@ -12,8 +12,8 @@ from connection.connection_packages import (
     read_60d_object_extended,
     read_60e_object_warning,
 )
-from graph.graph_filter import Filter_graph, UNKNOWN_DYNAMIC_COLOR_BGR
-from interface.filter_schema import (
+from GRAPH.graph_filter import Filter_graph, UNKNOWN_DYNAMIC_COLOR_BGR
+from INTERFACE.filter_schema import (
     AMBIGUITY_STATE_OPTIONS,
     DYNAMIC_PROPERTY_OPTIONS,
     INVALID_STATE_OPTIONS,

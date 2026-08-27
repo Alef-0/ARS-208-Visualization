@@ -23,9 +23,22 @@ def _put_status(pool, message, payload):
         pass
 
 
-def _load_entries(folder):
+def _load_entries(folder, synced_only=True):
     root = Path(folder).expanduser()
-    return root, list(load_recording_entries(root))
+    entries = list(load_recording_entries(root))
+    if not synced_only:
+        return root, entries
+    synced_entries = [
+        entry
+        for entry in entries
+        if entry.point_cloud is not None and entry.camera_frame is not None
+    ]
+    if not synced_entries:
+        raise ValueError(
+            "No synced image + PCD pairs were found. Uncheck "
+            "'Synced image + PCD only' to play single-modality entries."
+        )
+    return root, synced_entries
 
 
 class SnapshotPlaybackController:
@@ -34,12 +47,24 @@ class SnapshotPlaybackController:
         self.pool = pool
         self.shutdown_event = shutdown_event
         self.filters = Filter_graph(initial_values)
-        self.graph = Graph_radar(initial_values.get("point_cutoff", 15.0))
+        self.graph = Graph_radar(
+            initial_values.get("point_cutoff", 15.0),
+            initial_values.get("graph_width", 800),
+            initial_values.get("graph_height", 600),
+            initial_values.get("graph_x_range", 15.0),
+            initial_values.get("graph_y_range", 15.0),
+        )
         self.active = False
         self.paused = False
         self.stop_requested = False
         self.width = DEFAULT_PLAYBACK_WIDTH
         self.height = DEFAULT_PLAYBACK_HEIGHT
+        try:
+            self.camera_delay_seconds = float(
+                initial_values.get("camera_latency_adjustment", 145)
+            ) / 1000.0
+        except (TypeError, ValueError):
+            self.camera_delay_seconds = CAMERA_DELAY_SECONDS
         self.entries = []
         self.index = 0
         self.current_reader = None
@@ -62,6 +87,16 @@ class SnapshotPlaybackController:
                 self._set_resolution(value)
             elif event == "point_cutoff":
                 self.graph.set_distance_cutoff(value.get("distance", 15.0))
+            elif event == "graph_resolution":
+                self.graph.set_resolution(
+                    value.get("width", 800), value.get("height", 600)
+                )
+            elif event == "graph_range":
+                self.graph.set_range(
+                    value.get("x_range", 15.0), value.get("y_range", 15.0)
+                )
+            elif event == "camera_latency_adjustment":
+                self._set_camera_latency_adjustment(value)
             elif isinstance(event, str) and event.startswith("filter"):
                 self.filters.update_values(event, value)
         self._close_windows()
@@ -75,18 +110,23 @@ class SnapshotPlaybackController:
         if self.active and self.entries:
             self._render()
 
+    def _set_camera_latency_adjustment(self, value):
+        self.camera_delay_seconds = float(value.get("latency_adjustment_ms")) / 1000.0
+
     def _play(self, value):
         try:
-            root, self.entries = _load_entries(value["folder"])
+            root, self.entries = _load_entries(
+                value["folder"], value.get("synced_only", True)
+            )
             self.snapshot_folder = value.get("snapshot_folder")
             self._set_resolution(value)
             self.active = True
-            self.paused = True
+            self.paused = False
             self.stop_requested = False
             self.index = 0
             _put_status(self.pool, "snapshot_playback_state", {
                 "active": True,
-                "paused": True,
+                "paused": False,
                 "current": 1,
                 "total": len(self.entries),
                 "folder": str(root.resolve()),
@@ -118,6 +158,7 @@ class SnapshotPlaybackController:
                             self.index += 1
                             self._render()
                         break
+                    self._process_window_events()
 
             _put_status(self.pool, "snapshot_playback_state", {
                 "active": False,
@@ -185,6 +226,25 @@ class SnapshotPlaybackController:
                     self._render()
             except Exception as error:
                 _put_status(self.pool, "point_cutoff_error", str(error))
+        elif event == "graph_resolution":
+            try:
+                self.graph.set_resolution(
+                    value.get("width", 800), value.get("height", 600)
+                )
+            except (AttributeError, TypeError, ValueError) as error:
+                _put_status(self.pool, "graph_resolution_error", str(error))
+        elif event == "graph_range":
+            try:
+                self.graph.set_range(
+                    value.get("x_range", 15.0), value.get("y_range", 15.0)
+                )
+            except (AttributeError, TypeError, ValueError) as error:
+                _put_status(self.pool, "graph_range_error", str(error))
+        elif event == "camera_latency_adjustment":
+            try:
+                self._set_camera_latency_adjustment(value)
+            except Exception as error:
+                _put_status(self.pool, "camera_latency_error", str(error))
         elif isinstance(event, str) and event.startswith("filter"):
             self.filters.update_values(event, value)
             self._render()
@@ -235,6 +295,12 @@ class SnapshotPlaybackController:
             "total": len(self.entries),
         })
 
+    @staticmethod
+    def _process_window_events():
+        # OpenCV dispatches mouse callbacks from waitKey. Keep pumping its event
+        # queue even while playback is paused so radar clicks are handled now.
+        cv.waitKey(1)
+
     def _save_snapshot(self, folder):
         if not self.entries:
             raise RuntimeError("No playback frame is currently displayed")
@@ -252,9 +318,12 @@ class SnapshotPlaybackController:
             raise ValueError("Select a snapshot destination folder")
 
         camera_time = entry.camera_recorded_at or (
-            entry.recorded_at + timedelta(seconds=CAMERA_DELAY_SECONDS)
+            entry.recorded_at + timedelta(seconds=self.camera_delay_seconds)
         )
-        result = ManualSnapshotWriter(destination).save(
+        result = ManualSnapshotWriter(
+            destination,
+            camera_delay_seconds=self.camera_delay_seconds,
+        ).save(
             self.current_reader.points,
             entry.recorded_at,
             self.current_reader.frame_type,

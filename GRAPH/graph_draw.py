@@ -19,17 +19,50 @@ DYNAMIC_PROPERTY_LABELS = {
 
 
 class Graph_radar():
-    def __init__(self, distance_cutoff=MAX_VALUES):
-        # Define graph parameters
+    def __init__(
+        self,
+        distance_cutoff=MAX_VALUES,
+        width=WIDTH,
+        height=HEIGHT,
+        x_range=MAX_VALUES,
+        y_range=MAX_VALUES,
+    ):
         self.margin = 50
-        self.graph_width = WIDTH - 2 * self.margin
-        self.graph_height = HEIGHT - 2 * self.margin
-        self.origin_x = WIDTH // 2
-        self.origin_y = HEIGHT - self.margin
-        self.x_min, self.x_max = -MAX_VALUES, MAX_VALUES
-        self.y_min, self.y_max = 0, MAX_VALUES
+        self.width, self.height = self._validated_resolution(width, height)
+        self.x_range, self.y_range = self._validated_range(x_range, y_range)
+        self._update_geometry()
         self.distance_cutoff = self._validated_cutoff(distance_cutoff)
         self.displayed_points = []
+        self._refresh_base_image()
+
+    @staticmethod
+    def _validated_resolution(width, height):
+        width, height = int(width), int(height)
+        if width <= 2 * 50 or height <= 2 * 50:
+            raise ValueError("Graph width and height must be greater than 100 pixels")
+        return width, height
+
+    @staticmethod
+    def _validated_range(x_range, y_range):
+        x_range, y_range = float(x_range), float(y_range)
+        if (
+            not math.isfinite(x_range)
+            or not math.isfinite(y_range)
+            or x_range <= 0
+            or y_range <= 0
+        ):
+            raise ValueError("Graph X and Y ranges must be positive numbers")
+        return x_range, y_range
+
+    def _update_geometry(self):
+        self.graph_width = self.width - 2 * self.margin
+        self.graph_height = self.height - 2 * self.margin
+        self.origin_x = self.width // 2
+        self.origin_y = self.height - self.margin
+        self.x_min, self.x_max = -self.x_range, self.x_range
+        self.y_min, self.y_max = 0.0, self.y_range
+
+    def _refresh_base_image(self):
         self.base_image = self.create_base_image()
         self.base_image = self.create_details()
 
@@ -42,63 +75,84 @@ class Graph_radar():
 
     def set_distance_cutoff(self, value):
         self.distance_cutoff = self._validated_cutoff(value)
-        self.base_image = self.create_base_image()
-        self.base_image = self.create_details()
+        self._refresh_base_image()
+
+    def set_resolution(self, width, height):
+        self.width, self.height = self._validated_resolution(width, height)
+        self._update_geometry()
+        self._refresh_base_image()
+
+    def set_range(self, x_range, y_range):
+        self.x_range, self.y_range = self._validated_range(x_range, y_range)
+        self._update_geometry()
+        self._refresh_base_image()
 
     def graph_to_pixel(self, x, y):
         pixel_x = int(self.origin_x + (x * self.graph_width) / (self.x_max - self.x_min))
         pixel_y = int(self.origin_y - (y * self.graph_height) / (self.y_max - self.y_min))
         return (pixel_x, pixel_y)
 
+    @staticmethod
+    def _tick_step(limit, target_count):
+        raw_step = float(limit) / target_count
+        magnitude = 10 ** math.floor(math.log10(raw_step))
+        normalized = raw_step / magnitude
+        factor = next(value for value in (1, 2, 5, 10) if normalized <= value)
+        return factor * magnitude
+
+    @staticmethod
+    def _positive_ticks(limit, target_count):
+        step = Graph_radar._tick_step(limit, target_count)
+        count = int(math.floor(limit / step + 1e-9))
+        return [step * index for index in range(1, count + 1)]
+
+    @staticmethod
+    def _tick_label(value):
+        return f"{value:g}"
+
     def create_base_image(self):
-        frame = np.ones((HEIGHT, WIDTH, 3), dtype=np.uint8) * 255
+        frame = np.ones((self.height, self.width, 3), dtype=np.uint8) * 255
 
         # Draw border
         cv.rectangle(frame, (self.margin // 2, self.margin // 2),
-                    (WIDTH - self.margin // 2, HEIGHT - self.margin // 2), (0, 0, 0), 2)
+                    (self.width - self.margin // 2, self.height - self.margin // 2), (0, 0, 0), 2)
 
         # Draw X-axis
-        cv.line(frame, (self.margin, self.origin_y), (WIDTH - self.margin, self.origin_y), (0, 0, 0), 2)
+        cv.line(frame, (self.margin, self.origin_y), (self.width - self.margin, self.origin_y), (0, 0, 0), 2)
         # Draw Y-axis
-        cv.line(frame, (self.origin_x, HEIGHT - self.margin), (self.origin_x, self.margin), (0, 0, 0), 2)
+        cv.line(frame, (self.origin_x, self.height - self.margin), (self.origin_x, self.margin), (0, 0, 0), 2)
 
         # Draw grid lines (lighter)
-        for x in range(self.x_min, self.x_max + 1):
-            if x == 0:
-                continue
+        x_grid = self._positive_ticks(self.x_range, 15)
+        for x in [*[-value for value in reversed(x_grid)], *x_grid]:
             pixel_x, _ = self.graph_to_pixel(x, 0)
-            cv.line(frame, (pixel_x, self.margin), (pixel_x, HEIGHT - self.margin), (200, 200, 200), 1)
+            cv.line(frame, (pixel_x, self.margin), (pixel_x, self.height - self.margin), (200, 200, 200), 1)
 
-        for y in range(self.y_min, self.y_max + 1):
-            if y == 0:
-                continue
+        for y in self._positive_ticks(self.y_range, 15):
             _, pixel_y = self.graph_to_pixel(0, y)
-            cv.line(frame, (self.margin, pixel_y), (WIDTH - self.margin, pixel_y), (200, 200, 200), 1)
+            cv.line(frame, (self.margin, pixel_y), (self.width - self.margin, pixel_y), (200, 200, 200), 1)
 
         # Draw arrows
         # X-axis arrow
-        cv.arrowedLine(frame, (WIDTH - self.margin - 10, self.origin_y),
-                        (WIDTH - self.margin, self.origin_y), (0, 0, 0), 2, tipLength=0.02)
+        cv.arrowedLine(frame, (self.width - self.margin - 10, self.origin_y),
+                        (self.width - self.margin, self.origin_y), (0, 0, 0), 2, tipLength=0.02)
         # Y-axis arrow
         cv.arrowedLine(frame, (self.origin_x, self.margin + 10),
                         (self.origin_x, self.margin), (0, 0, 0), 2, tipLength=0.02)
 
         # Draw tick marks and labels for X-axis
-        for x in range(self.x_min, self.x_max + 1, 5):
-            if x == 0:
-                continue  # Skip origin
+        x_ticks = self._positive_ticks(self.x_range, 4)
+        for x in [*[-value for value in reversed(x_ticks)], *x_ticks]:
             pixel_x, pixel_y = self.graph_to_pixel(x, 0)
             cv.line(frame, (pixel_x, pixel_y - 5), (pixel_x, pixel_y + 5), (0, 0, 0), 1)
-            cv.putText(frame, str(x), (pixel_x - 10, pixel_y + 20),
+            cv.putText(frame, self._tick_label(x), (pixel_x - 10, pixel_y + 20),
                         cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
         # Draw tick marks and labels for Y-axis
-        for y in range(self.y_min, self.y_max + 1, 5):
-            if y == 0:
-                continue  # Skip origin
+        for y in self._positive_ticks(self.y_range, 4):
             pixel_x, pixel_y = self.graph_to_pixel(0, y)
             cv.line(frame, (pixel_x - 5, pixel_y), (pixel_x + 5, pixel_y), (0, 0, 0), 1)
-            cv.putText(frame, str(y), (pixel_x - 25, pixel_y + 5),
+            cv.putText(frame, self._tick_label(y), (pixel_x - 25, pixel_y + 5),
                         cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
         # Draw origin label
@@ -106,7 +160,7 @@ class Graph_radar():
                     cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
         # Draw axis labels
-        cv.putText(frame, "X", (WIDTH - self.margin + 5, self.origin_y + 5),
+        cv.putText(frame, "X", (self.width - self.margin + 5, self.origin_y + 5),
                     cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
         cv.putText(frame, "Y", (self.origin_x - 5, self.margin - 5),
                     cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
@@ -135,8 +189,8 @@ class Graph_radar():
         cv.line(new_img, center, end_right, (0, 0, 0), 1)
 
         # Draw the semicircles
-        for i in range(1, self.y_max + 1):
-            self._draw_range_arc(new_img, i, (0, 0, 0), 1)
+        for distance in self._positive_ticks(self.y_range, 15):
+            self._draw_range_arc(new_img, distance, (0, 0, 0), 1)
 
         if self.distance_cutoff <= self.y_max:
             self._draw_range_arc(new_img, self.distance_cutoff, (0, 0, 255), 2)
@@ -191,9 +245,7 @@ class Graph_radar():
         if object_class:
             details += f" | object_class={object_class}"
 
-        print("========== RADAR POINT ==========")
-        print(details)
-        print("=================================")
+        print(f"[RADAR POINT] {details}")
 
     def show_points(self, x_group, y_group, colors, points=None):
         new_img = self.base_image.copy()

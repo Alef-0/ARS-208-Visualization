@@ -13,6 +13,14 @@ class Configurations(BaseConfigurations):
         self.playback_width = 1280
         self.playback_height = 720
         self.point_cutoff = 15.0
+        self.graph_width = 800
+        self.graph_height = 600
+        self.graph_x_range = 15
+        self.graph_y_range = 15
+        self.calibration_camera = False
+        self.calibration_camera_pending = False
+        self.calibration_clock = False
+        self.calibration_recording = False
         super().__init__()
 
     def create_radar_division(self):
@@ -157,6 +165,11 @@ class Configurations(BaseConfigurations):
                 sg.Text("Playback folder"),
                 sg.Input(default_text=str(Path.cwd()), key="snapshot_playback_folder", expand_x=True),
                 sg.FolderBrowse("SELECT", key="snapshot_playback_browse", target="snapshot_playback_folder"),
+                sg.Checkbox(
+                    "Image + PCD",
+                    key="snapshot_playback_synced_only",
+                    default=True,
+                ),
             ],
             [
                 sg.Push(),
@@ -188,38 +201,98 @@ class Configurations(BaseConfigurations):
     def _create_general_configurations_layout():
         return [
             [
-                sg.Push(),
-                sg.Text("Playback / live camera resolution"),
-                sg.Input("1280", key="playback_width", size=(8, 1), justification="right"),
-                sg.Text("×"),
-                sg.Input("720", key="playback_height", size=(8, 1), justification="right"),
-                sg.Button("APPLY", key="playback_resolution_apply"),
-                sg.Push(),
+                sg.Column([[
+                    sg.Text("Camera Resolution"),
+                    sg.Input("1280", key="playback_width", size=(8, 1), justification="right"),
+                    sg.Text("×"),
+                    sg.Input("720", key="playback_height", size=(8, 1), justification="right"),
+                    sg.Button("APPLY", key="playback_resolution_apply"),
+                ]], expand_x=True),
+                sg.VSep(),
+                sg.Column([[
+                    sg.Text("Recording interval (ms)"),
+                    sg.Input("250", key="camera_recording_interval", size=(9, 1), justification="right"),
+                    sg.Button("APPLY", key="recording_interval_apply"),
+                ]]),
             ],
             [
-                sg.Text(
-                    "This resizes only displayed camera images. Recording and snapshot images keep the source resolution.",
-                    expand_x=True,
-                    justification="center",
-                )
+                sg.Push(),
+                sg.Text("1280 × 720", key="playback_resolution_status"),
+                sg.VSep(),
+                sg.Text("250 ms (4 FPS)", key="recording_interval_status"),
+                sg.Push(),
             ],
-            [sg.Push(), sg.Text("1280 × 720", key="playback_resolution_status"), sg.Push()],
+            [sg.HorizontalSeparator()],
+            [
+                sg.Column([[
+                    sg.Text("Point cutoff (m)"),
+                    sg.Input("15", key="point_cutoff", size=(6, 1), justification="right"),
+                    sg.Button("APPLY", key="point_cutoff_apply"),
+                ]]),
+                sg.VSep(),
+                sg.Column([[
+                    sg.Text("Graph Resolution"),
+                    sg.Input("800", key="graph_width", size=(6, 1), justification="right"),
+                    sg.Text("×"),
+                    sg.Input("600", key="graph_height", size=(6, 1), justification="right"),
+                ], [
+                    sg.Text("Graph Range (m)"),
+                    sg.Text("X ±"),
+                    sg.Input("15", key="graph_x_range", size=(5, 1), justification="right"),
+                    sg.Text("Y 0–"),
+                    sg.Input("15", key="graph_y_range", size=(5, 1), justification="right"),
+                    sg.Button("APPLY", key="graph_settings_apply"),
+                ]]),
+            ],
+            [
+                sg.Push(),
+                sg.Text("Cutoff 15.0 m", key="point_cutoff_status"),
+                sg.VSep(),
+                sg.Text("800 × 600", key="graph_resolution_status"),
+                sg.VSep(),
+                sg.Text("X ±15 m | Y 0–15 m", key="graph_range_status"),
+                sg.Push(),
+            ],
+        ]
+
+    @staticmethod
+    def _create_calibration_layout():
+        return [
+            [
+                sg.Push(),
+                sg.Column([[
+                    sg.Text("Camera latency"),
+                    sg.Input("145", key="camera_pipeline_latency", size=(9, 1), justification="right"),
+                    sg.Text("Pipeline Adjustment (ms)"),
+                    sg.Input("145", key="camera_latency_adjustment", size=(9, 1), justification="right"),
+                    sg.Button("APPLY LATENCIES", key="calibration_latency_apply"),
+                ]]),
+                sg.Push(),
+            ],
+            [sg.Push(), sg.Text("145 ms / 145 ms", key="calibration_latency_status"), sg.Push()],
             [sg.HorizontalSeparator()],
             [
                 sg.Push(),
-                sg.Text("Displayed point cutoff (m)"),
-                sg.Input("15", key="point_cutoff", size=(8, 1), justification="right"),
-                sg.Button("APPLY", key="point_cutoff_apply"),
+                sg.Button(
+                    "OPEN CALIBRATION CAMERA 4",
+                    key="calibration_camera_toggle",
+                    button_color=("white", "green"),
+                ),
+                sg.Button(
+                    "START FULLSCREEN CLOCK",
+                    key="calibration_clock_start",
+                    button_color=("white", "green"),
+                ),
                 sg.Push(),
             ],
             [
                 sg.Text(
-                    "The radar graph remains 800 × 600 with a 15 m scale. A red arc marks the cutoff while it is inside the visible range.",
+                    "The fullscreen clock records after 3 seconds and stops recording when closed.",
                     expand_x=True,
                     justification="center",
                 )
             ],
-            [sg.Push(), sg.Text("15.0 m", key="point_cutoff_status"), sg.Push()],
+            [sg.Push(), sg.Text("IDLE", key="calibration_status"), sg.Push()],
         ]
 
     def create_radar_control(self):
@@ -227,10 +300,11 @@ class Configurations(BaseConfigurations):
             sg.Tab("Configurations", self.options),
             sg.Tab("Record", self._create_record_layout()),
             sg.Tab("Snapshots", self._create_snapshot_layout()),
-            sg.Tab("General Configurations", self._create_general_configurations_layout()),
+            sg.Tab("Display", self._create_general_configurations_layout()),
+            sg.Tab("Calibration", self._create_calibration_layout()),
         ]]
         self.radar_control = sg.Frame(
-            "Radar Control",
+            "General Control",
             [[sg.TabGroup(tabs, expand_x=True, pad=(0, 0))]],
             expand_x=True,
             title_location=sg.TITLE_LOCATION_TOP,
@@ -243,6 +317,8 @@ class Configurations(BaseConfigurations):
             or self.playback_pending
             or self.snapshot_playback
             or self.snapshot_playback_pending
+            or self.calibration_camera
+            or self.calibration_camera_pending
         )
         recording_inputs_disabled = self.recording or self.recording_pending or live_blocked
         for key in ("record_folder", "record_browse", "record_radar_1", "record_radar_2", "record_radar_3"):
@@ -252,7 +328,6 @@ class Configurations(BaseConfigurations):
             self.recording_pending
             or self.snapshot_pending
             or live_blocked
-            or (not self.recording and not self.connected_radar)
         )
         self.window["record_toggle"].update(disabled=record_disabled)
 
@@ -291,11 +366,20 @@ class Configurations(BaseConfigurations):
                 self.recording
                 or self.recording_pending
                 or self.snapshot_pending
+                or self.playback
                 or self.playback_pending
                 or self.snapshot_playback
                 or self.snapshot_playback_pending
             )
         )
+        transport_disabled = not self.playback
+        for key in (
+            "playback_stop",
+            "playback_restart",
+            "playback_previous_5s",
+            "playback_next_5s",
+        ):
+            self.window[key].update(disabled=transport_disabled)
 
         snapshot_playback_inputs_disabled = (
             self.recording
@@ -306,7 +390,11 @@ class Configurations(BaseConfigurations):
             or self.snapshot_playback
             or self.snapshot_playback_pending
         )
-        for key in ("snapshot_playback_folder", "snapshot_playback_browse"):
+        for key in (
+            "snapshot_playback_folder",
+            "snapshot_playback_browse",
+            "snapshot_playback_synced_only",
+        ):
             self.window[key].update(disabled=snapshot_playback_inputs_disabled)
         self.window["snapshot_playback_toggle"].update(
             disabled=(
@@ -329,6 +417,20 @@ class Configurations(BaseConfigurations):
 
         for key in ("conn_radar", "conn_cam"):
             self.window[key].update(disabled=live_blocked or self.snapshot_pending)
+        for channel in range(1, 4):
+            self.window[f"choose_{channel}"].update(
+                disabled=self.calibration_camera or self.calibration_camera_pending
+            )
+        self.window["calibration_camera_toggle"].update(
+            disabled=(
+                self.calibration_camera_pending
+                or (self.recording_pending and not self.calibration_camera)
+                or self.snapshot_pending
+            )
+        )
+        self.window["calibration_clock_start"].update(
+            disabled=self.calibration_clock
+        )
 
     def change_received_messages(self, message_ids):
         messages = ", ".join(f"0x{message_id:03X}" for message_id in message_ids) or "--"
@@ -411,4 +513,70 @@ class Configurations(BaseConfigurations):
 
     def change_point_cutoff(self, cutoff):
         self.point_cutoff = cutoff
-        self.window["point_cutoff_status"].update(f"{cutoff:.1f} m")
+        self.window["point_cutoff_status"].update(f"Cutoff {cutoff:.1f} m")
+
+    def change_graph_resolution(self, width, height):
+        self.graph_width = width
+        self.graph_height = height
+        self.window["graph_resolution_status"].update(f"{width} × {height}")
+
+    def change_graph_range(self, x_range, y_range):
+        self.graph_x_range = x_range
+        self.graph_y_range = y_range
+        self.window["graph_range_status"].update(
+            f"X ±{x_range:g} m | Y 0–{y_range:g} m"
+        )
+
+    def set_calibration_camera_pending(self):
+        self.calibration_camera_pending = True
+        self.window["calibration_camera_toggle"].update("OPENING CAMERA 4...", disabled=True)
+        self.window["calibration_status"].update("CLOSING RADARS AND OPENING CAMERA 4")
+        self._refresh_mode_controls()
+
+    def change_calibration_camera(self, active):
+        self.calibration_camera = bool(active)
+        self.calibration_camera_pending = False
+        self.window["calibration_camera_toggle"].update(
+            "CLOSE CALIBRATION CAMERA 4" if active else "OPEN CALIBRATION CAMERA 4",
+            button_color=("white", "red" if active else "green"),
+        )
+        if active:
+            self.window["calibration_status"].update("CAMERA 4 OPEN")
+        elif not self.calibration_recording:
+            self.window["calibration_status"].update("IDLE")
+        self._refresh_mode_controls()
+
+    def change_calibration_clock(self, active):
+        self.calibration_clock = bool(active)
+        self.window["calibration_clock_start"].update(
+            "CLOCK ACTIVE" if active else "START FULLSCREEN CLOCK",
+            disabled=active,
+            button_color=("white", "red" if active else "green"),
+        )
+        self._refresh_mode_controls()
+
+    def change_calibration_recording(self, payload):
+        self.calibration_recording = bool(payload.get("active"))
+        if self.calibration_recording:
+            self.window["calibration_status"].update(
+                f"RECORDING CAMERA 4 — {payload.get('folder', '')}"
+            )
+        else:
+            count = payload.get("count", 0)
+            self.window["calibration_status"].update(
+                f"SAVED {count} CAMERA FRAMES" if count else "CAMERA 4 OPEN"
+            )
+
+    def change_calibration_latencies(self, pipeline_latency_ms, adjustment_ms):
+        self.window["calibration_latency_status"].update(
+            f"{pipeline_latency_ms} ms / {adjustment_ms:g} ms"
+        )
+
+    def change_recording_interval(self, interval_ms):
+        frames_per_second = 1000.0 / interval_ms
+        self.window["recording_interval_status"].update(
+            f"{interval_ms:g} ms ({frames_per_second:.2f} FPS)"
+        )
+
+    def show_calibration_error(self, message):
+        sg.popup_error(message, title="Calibration error")

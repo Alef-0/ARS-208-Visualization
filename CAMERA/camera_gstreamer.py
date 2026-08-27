@@ -1,4 +1,3 @@
-from datetime import datetime
 import queue
 import signal
 import socket
@@ -10,18 +9,25 @@ import gi
 import numpy as np
 
 from CAPTURE import CameraSnapshotRecorder
+from CAMERA.camera_pipeline_policy import (
+    FrameTimestampPolicy,
+    available_decoder_backends,
+    build_camera_pipeline,
+)
 
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst
 
 Gst.init(None)
 
-CAMERA_PIPELINE_LATENCY_MS = 250
+CAMERA_PIPELINE_LATENCY_MS = 145
 DEFAULT_DISPLAY_WIDTH = 1280
 DEFAULT_DISPLAY_HEIGHT = 720
 MAX_PIPELINE_ATTEMPTS = 3
 FIRST_FRAME_TIMEOUT_SECONDS = 5.0
 PIPELINE_RETRY_DELAY_SECONDS = 0.5
+TIMESTAMP_WARNING_INTERVAL_SECONDS = 5.0
+MANUAL_SNAPSHOT_TIMESTAMP_TIMEOUT_SECONDS = 5.0
 _RESULT_FAILURE = "failure"
 _RESULT_RESTART = "restart"
 _RESULT_CLOSED = "closed"
@@ -33,6 +39,7 @@ class GStreamerPipeline:
         self.main_loop = None
         self.frames = queue.Queue(maxsize=1)
         self.channel = 2
+        self.normal_channel = 2
         self.communicate = conn
         self.pool = pool
         self.shutdown_event = shutdown_event
@@ -44,7 +51,16 @@ class GStreamerPipeline:
         self.channel_changed = False
         self.display_width = DEFAULT_DISPLAY_WIDTH
         self.display_height = DEFAULT_DISPLAY_HEIGHT
+        self.pipeline_latency_ms = CAMERA_PIPELINE_LATENCY_MS
+        self.latency_adjustment_ms = 145.0
+        self.recording_interval_ms = 250.0
+        self.calibration_mode = False
+        self.calibration_recording = False
         self.snapshot_recorder = CameraSnapshotRecorder(self._report_snapshot)
+        self.timestamp_policy = FrameTimestampPolicy()
+        self.decoder_backends = available_decoder_backends()
+        self.decoder_backend_index = 0
+        self._last_timestamp_warning = 0.0
         self._manual_snapshot_lock = threading.Lock()
         self._pending_manual_snapshot: dict | None = None
 
@@ -61,24 +77,137 @@ class GStreamerPipeline:
     def _report_snapshot(self, payload):
         self._put_status("camera_snapshot", payload)
 
-    def _start_snapshot_recording(self, folders):
+    def _start_snapshot_recording(self, value):
+        calibration = bool(value.get("calibration"))
         try:
-            self.snapshot_recorder.start(folders)
-            self._put_status("camera_recording_state", {"active": True})
+            self.snapshot_recorder.start(
+                value.get("folders", {}),
+                calibration=calibration,
+                latency_adjustment_ms=self.latency_adjustment_ms,
+            )
+            self.calibration_recording = calibration
+            message = (
+                "calibration_recording_state"
+                if calibration
+                else "camera_recording_state"
+            )
+            self._put_status(message, {"active": True})
         except Exception as error:
             self._put_status("camera_recording_error", str(error))
-            self._put_status("camera_recording_state", {"active": False})
+            message = (
+                "calibration_recording_state"
+                if calibration
+                else "camera_recording_state"
+            )
+            self._put_status(message, {"active": False})
 
     def _stop_snapshot_recording(self):
+        was_calibration = self.calibration_recording
         try:
             count = self.snapshot_recorder.stop()
+            self.calibration_recording = False
             self._put_status(
-                "camera_recording_state",
+                "calibration_recording_state"
+                if was_calibration
+                else "camera_recording_state",
                 {"active": False, "count": count},
             )
         except Exception as error:
+            self.calibration_recording = False
             self._put_status("camera_recording_error", str(error))
-            self._put_status("camera_recording_state", {"active": False})
+            self._put_status(
+                "calibration_recording_state"
+                if was_calibration
+                else "camera_recording_state",
+                {"active": False},
+            )
+
+    def _connect_camera(self):
+        try:
+            with socket.create_connection(("192.168.1.108", 554), timeout=2):
+                self.connected = self.reset_decoder_selection()
+        except OSError:
+            self.connected = False
+        self._put_status("change_cam", self.connected)
+        return self.connected
+
+    def _set_calibration_camera(self, active):
+        active = bool(active)
+        if active:
+            self.calibration_mode = True
+            self.channel = 4
+            self.channel_changed = True
+            if not self.connected:
+                self._connect_camera()
+            if not self.connected:
+                self.calibration_mode = False
+                self.channel = self.normal_channel
+            if self.connected:
+                self.exit_reason = _RESULT_RESTART
+            self._put_status(
+                "calibration_camera_state",
+                {"active": self.connected, "channel": 4},
+            )
+            return self.connected
+
+        self.calibration_mode = False
+        self.channel = self.normal_channel
+        self.channel_changed = True
+        self.connected = False
+        self.exit_reason = _RESULT_CLOSED
+        self._fail_manual_snapshot("Calibration camera closed before taking the snapshot")
+        self._put_status("change_cam", False)
+        self._put_status("calibration_camera_state", {"active": False, "channel": 4})
+        return True
+
+    def _set_latency_settings(self, value):
+        try:
+            pipeline_latency_ms = int(value.get("pipeline_latency_ms"))
+            adjustment_ms = float(value.get("latency_adjustment_ms"))
+        except (AttributeError, TypeError, ValueError):
+            self._put_status(
+                "camera_latency_error",
+                "Both camera latency values must be numeric",
+            )
+            return False
+        if pipeline_latency_ms < 0:
+            self._put_status(
+                "camera_latency_error",
+                "RTSP source latency cannot be negative",
+            )
+            return False
+        restart = pipeline_latency_ms != self.pipeline_latency_ms and self.connected
+        self.pipeline_latency_ms = pipeline_latency_ms
+        self.latency_adjustment_ms = adjustment_ms
+        self.snapshot_recorder.set_latency_adjustment_ms(adjustment_ms)
+        self._put_status(
+            "camera_latency_state",
+            {
+                "pipeline_latency_ms": pipeline_latency_ms,
+                "latency_adjustment_ms": adjustment_ms,
+            },
+        )
+        if restart:
+            self.exit_reason = _RESULT_RESTART
+        return restart
+
+    def _set_recording_interval(self, value):
+        try:
+            interval_ms = float(value.get("interval_ms"))
+            if interval_ms <= 0:
+                raise ValueError
+            self.snapshot_recorder.set_snapshot_interval_seconds(interval_ms / 1000.0)
+        except (AttributeError, TypeError, ValueError):
+            self._put_status(
+                "camera_recording_interval_error",
+                "Camera recording interval must be a number greater than zero",
+            )
+            return
+        self.recording_interval_ms = interval_ms
+        self._put_status(
+            "camera_recording_interval_state",
+            {"interval_ms": interval_ms},
+        )
 
     def _set_display_resolution(self, value):
         try:
@@ -143,6 +272,7 @@ class GStreamerPipeline:
 
         request = dict(value)
         request["restore_channel"] = self.channel
+        request["queued_at"] = time.monotonic()
         with self._manual_snapshot_lock:
             if self._pending_manual_snapshot is not None:
                 self._put_status(
@@ -210,13 +340,13 @@ class GStreamerPipeline:
         buffer = sample.get_buffer()
         success, map_info = buffer.map(Gst.MapFlags.READ)
         if not success:
-            return None, None
+            return None
         try:
             caps = sample.get_caps().get_structure(0)
             width = caps.get_value("width")
             height = caps.get_value("height")
             frame = np.frombuffer(map_info.data, dtype=np.uint8).reshape(height, width, 3).copy()
-            return frame, datetime.now().astimezone()
+            return frame
         finally:
             buffer.unmap(map_info)
 
@@ -224,7 +354,7 @@ class GStreamerPipeline:
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.ERROR
-        frame, _ = self._sample_to_frame(sample)
+        frame = self._sample_to_frame(sample)
         if frame is None:
             return Gst.FlowReturn.ERROR
         try:
@@ -241,13 +371,40 @@ class GStreamerPipeline:
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.ERROR
-        frame, captured_at = self._sample_to_frame(sample)
-        if frame is None or captured_at is None:
+        frame = self._sample_to_frame(sample)
+        if frame is None:
             return Gst.FlowReturn.ERROR
+        first_frame = not self.first_frame_received
         self.first_frame_received = True
-        self.snapshot_recorder.submit(frame, captured_at=captured_at)
-        self._emit_manual_snapshot(frame, captured_at)
+        if first_frame:
+            print(
+                f"[DEBUG][CAMERA] Camera channel {self.channel} is using the "
+                f"{self.current_decoder_backend.name} decoder"
+            )
+
+        timestamp = self.timestamp_policy.timestamp_for_sample(sample)
+        if not timestamp.valid:
+            self._reject_synchronized_frame(timestamp.reason or "unknown timestamp error")
+            return Gst.FlowReturn.OK
+
+        self.snapshot_recorder.submit(frame, captured_at=timestamp.captured_at)
+        self._emit_manual_snapshot(frame, timestamp.captured_at)
         return Gst.FlowReturn.OK
+
+    def _reject_synchronized_frame(self, reason):
+        now = time.monotonic()
+        if now - self._last_timestamp_warning >= TIMESTAMP_WARNING_INTERVAL_SECONDS:
+            print(f"[DEBUG][CAMERA] Skipping unsynchronized camera frame: {reason}")
+            self._put_status("camera_timestamp_warning", reason)
+            self._last_timestamp_warning = now
+
+        with self._manual_snapshot_lock:
+            request = self._pending_manual_snapshot
+            queued_at = request.get("queued_at", now) if request is not None else now
+        if request is not None and now - queued_at >= MANUAL_SNAPSHOT_TIMESTAMP_TIMEOUT_SECONDS:
+            self._fail_manual_snapshot(
+                "Camera frames did not contain a valid synchronization timestamp"
+            )
 
     def on_message(self, _bus, message):
         if message.type in (Gst.MessageType.EOS, Gst.MessageType.ERROR):
@@ -270,13 +427,18 @@ class GStreamerPipeline:
                     self.connected = False
                     self.exit_reason = _RESULT_CLOSED
                     restart = True
-                elif event == "choose" and value != self.channel:
+                elif event == "choose":
+                    self.normal_channel = value
+                    if self.calibration_mode or value == self.channel:
+                        continue
                     self.channel = value
                     self.channel_changed = True
                     if self.connected:
                         self.exit_reason = _RESULT_RESTART
                         restart = True
                 elif event == "conn_cam":
+                    if self.calibration_mode:
+                        continue
                     if self.connected:
                         self.connected = False
                         self.exit_reason = _RESULT_CLOSED
@@ -284,14 +446,15 @@ class GStreamerPipeline:
                         self._put_status("change_cam", False)
                         restart = True
                     else:
-                        try:
-                            with socket.create_connection(("192.168.1.108", 554), timeout=2):
-                                self.connected = True
-                                self._put_status("change_cam", True)
-                        except OSError:
-                            self._put_status("change_cam", False)
+                        self._connect_camera()
+                elif event == "calibration_camera":
+                    restart = self._set_calibration_camera(value.get("active")) or restart
+                elif event == "camera_latency_settings":
+                    restart = self._set_latency_settings(value) or restart
+                elif event == "camera_recording_interval":
+                    self._set_recording_interval(value)
                 elif event == "record_start":
-                    self._start_snapshot_recording(value.get("folders", {}))
+                    self._start_snapshot_recording(value)
                 elif event == "record_stop":
                     self._stop_snapshot_recording()
                 elif event == "snapshot_capture":
@@ -317,7 +480,7 @@ class GStreamerPipeline:
             frame = self.frames.get_nowait()
         except queue.Empty:
             return GLib.SOURCE_CONTINUE
-        cv.imshow("CAMERA", frame)
+        cv.imshow("CALIBRATION CAMERA 4" if self.calibration_mode else "CAMERA", frame)
         cv.waitKey(1)
         return GLib.SOURCE_CONTINUE
 
@@ -342,6 +505,32 @@ class GStreamerPipeline:
             except queue.Empty:
                 return
 
+    @property
+    def current_decoder_backend(self):
+        return self.decoder_backends[self.decoder_backend_index]
+
+    def reset_decoder_selection(self):
+        try:
+            self.decoder_backends = available_decoder_backends()
+        except RuntimeError as error:
+            self._put_status("camera_recording_error", str(error))
+            print(f"[DEBUG][CAMERA] {error}")
+            return False
+        self.decoder_backend_index = 0
+        return True
+
+    def advance_decoder_backend(self):
+        next_index = self.decoder_backend_index + 1
+        if next_index >= len(self.decoder_backends):
+            return False
+        previous = self.current_decoder_backend.name
+        self.decoder_backend_index = next_index
+        print(
+            f"[DEBUG][CAMERA] {previous} decoder failed; trying "
+            f"{self.current_decoder_backend.name}"
+        )
+        return True
+
     def _remove_sources(self):
         for source_id in self.source_ids:
             if source_id:
@@ -350,21 +539,19 @@ class GStreamerPipeline:
 
     @staticmethod
     def _destroy_window():
-        try:
-            cv.destroyWindow("CAMERA")
-            cv.waitKey(1)
-        except cv.error:
-            pass
+        for window_name in ("CAMERA", "CALIBRATION CAMERA 4"):
+            try:
+                cv.destroyWindow(window_name)
+                cv.waitKey(1)
+            except cv.error:
+                pass
 
     def run(self):
-        pipeline_str = (
-            f"rtspsrc name=source latency={CAMERA_PIPELINE_LATENCY_MS} protocols=tcp ! "
-            "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! tee name=video "
-            "video. ! queue leaky=downstream max-size-buffers=1 ! videoscale ! "
-            f"video/x-raw,format=BGR,width={self.display_width},height={self.display_height} ! "
-            "appsink name=display_sink emit-signals=true sync=false max-buffers=1 drop=true "
-            "video. ! queue leaky=downstream max-size-buffers=1 ! video/x-raw,format=BGR ! "
-            "appsink name=capture_sink emit-signals=true sync=false max-buffers=1 drop=true"
+        pipeline_str = build_camera_pipeline(
+            self.current_decoder_backend,
+            display_width=self.display_width,
+            display_height=self.display_height,
+            latency_ms=self.pipeline_latency_ms,
         )
         bus = None
         self._clear_frames()
@@ -378,6 +565,8 @@ class GStreamerPipeline:
             display_sink = self.pipeline.get_by_name("display_sink")
             capture_sink = self.pipeline.get_by_name("capture_sink")
             source.set_property("location", self.create_url(self.channel))
+            self.timestamp_policy.reset(self.pipeline)
+            self.timestamp_policy.attach_rtsp_source(source)
             display_sink.connect("new-sample", self.on_new_display_sample)
             capture_sink.connect("new-sample", self.on_new_capture_sample)
             bus = self.pipeline.get_bus()
@@ -389,6 +578,7 @@ class GStreamerPipeline:
                 GLib.timeout_add(10, self.process_commands),
                 GLib.timeout_add(10, self.display_latest_frame),
                 GLib.timeout_add(100, self.check_first_frame),
+                GLib.timeout_add(500, self.timestamp_policy.check_rtcp_stats),
             ]
 
             if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
@@ -435,6 +625,10 @@ def gstreamer_main(connection, pool, shutdown_event):
             if shutdown_event.is_set() or not pipeline.connected:
                 continue
 
+            if not received_frame and pipeline.advance_decoder_backend():
+                failed_attempts = 0
+                continue
+
             if received_frame:
                 failed_attempts = 0
             failed_attempts += 1
@@ -445,7 +639,16 @@ def gstreamer_main(connection, pool, shutdown_event):
                 )
                 pipeline.connected = False
                 pipeline._fail_manual_snapshot("Camera pipeline failed before taking the snapshot")
+                if pipeline.snapshot_recorder.active:
+                    pipeline._stop_snapshot_recording()
                 pipeline._put_status("change_cam", False)
+                if pipeline.calibration_mode:
+                    pipeline.calibration_mode = False
+                    pipeline.channel = pipeline.normal_channel
+                    pipeline._put_status(
+                        "calibration_camera_state",
+                        {"active": False, "channel": 4},
+                    )
                 failed_attempts = 0
                 continue
 
