@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
+import math
 from pathlib import Path
 import signal
 import time
@@ -52,6 +53,33 @@ def _point_cutoff(values):
     if cutoff <= 0:
         raise ValueError("Point cutoff must be greater than zero")
     return cutoff
+
+
+def _graph_resolution(values):
+    try:
+        width = int(str(values.get("graph_width", "800")).strip())
+        height = int(str(values.get("graph_height", "600")).strip())
+    except ValueError as error:
+        raise ValueError("Graph width and height must be integers") from error
+    if width <= 100 or height <= 100:
+        raise ValueError("Graph width and height must be greater than 100 pixels")
+    return width, height
+
+
+def _graph_range(values):
+    try:
+        x_range = float(str(values.get("graph_x_range", "15")).strip())
+        y_range = float(str(values.get("graph_y_range", "15")).strip())
+    except ValueError as error:
+        raise ValueError("Graph X and Y ranges must be numbers in meters") from error
+    if (
+        not math.isfinite(x_range)
+        or not math.isfinite(y_range)
+        or x_range <= 0
+        or y_range <= 0
+    ):
+        raise ValueError("Graph X and Y ranges must be greater than zero")
+    return x_range, y_range
 
 
 def _camera_latency_settings(values):
@@ -263,9 +291,9 @@ def _request_snapshot_playback(
         return
 
     folder = Path(values.get("snapshot_playback_folder", "")).expanduser()
-    if not folder.is_dir() or not (folder / "recording.json").is_file():
+    if not folder.is_dir():
         config.show_snapshot_playback_error(
-            "Select a recording folder containing recording.json and camera images"
+            "Select an existing snapshot playback folder"
         )
         return
     try:
@@ -279,6 +307,7 @@ def _request_snapshot_playback(
         "snapshot_folder": str(Path(values.get("snapshot_folder", "")).expanduser().resolve()),
         "width": width,
         "height": height,
+        "synced_only": bool(values.get("snapshot_playback_synced_only", True)),
     }
     config.set_snapshot_playback_pending()
     if config.recording or config.recording_pending:
@@ -343,6 +372,24 @@ def _handle_gui_event(
         send_playback.send(("point_cutoff", payload))
         send_snapshot_playback.send(("point_cutoff", payload))
         config.change_point_cutoff(cutoff)
+        return
+    if event == "graph_settings_apply":
+        try:
+            width, height = _graph_resolution(values)
+            x_range, y_range = _graph_range(values)
+        except ValueError as error:
+            sg.popup_error(str(error), title="Graph settings error")
+            return
+        resolution_payload = {"width": width, "height": height}
+        range_payload = {"x_range": x_range, "y_range": y_range}
+        send_radar.send(("graph_resolution", resolution_payload))
+        send_radar.send(("graph_range", range_payload))
+        send_playback.send(("graph_resolution", resolution_payload))
+        send_playback.send(("graph_range", range_payload))
+        send_snapshot_playback.send(("graph_resolution", resolution_payload))
+        send_snapshot_playback.send(("graph_range", range_payload))
+        config.change_graph_resolution(width, height)
+        config.change_graph_range(x_range, y_range)
         return
     if event == "calibration_latency_apply":
         try:
@@ -415,6 +462,9 @@ def _apply_status_message(
         return
     if message == "playback_error" and isinstance(payload, dict):
         payload = payload.get("message", "Playback failed")
+    if message in ("graph_resolution_error", "graph_range_error"):
+        sg.popup_error(payload, title="Graph display error")
+        return
     if message == "calibration_camera_state":
         config.change_calibration_camera(payload.get("active"))
         if not payload.get("active"):

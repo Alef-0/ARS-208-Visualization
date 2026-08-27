@@ -254,10 +254,10 @@ class Configurations:
     def _create_record_layout():
         recording_root = Path.cwd() / "recordings"
         recording_root.mkdir(exist_ok=True)
-        radar_choices = [sg.Text("Radars:")]
+        radar_choices = [sg.Text("Group:")]
         for channel, letter in ((1, "A"), (2, "B"), (3, "C")):
             radar_choices.append(
-                sg.Checkbox(letter, key=f"record_radar_{channel}", default=True)
+                sg.Checkbox(letter, key=f"record_radar_{channel}", default=False)
             )
         return [
             [
@@ -273,6 +273,11 @@ class Configurations:
                 *radar_choices,
                 sg.Push(),
                 sg.Text("IDLE", key="record_status", justification="center"),
+                sg.Text(
+                    "RADAR CLOSED | CAMERA CLOSED",
+                    key="record_devices",
+                    justification="center",
+                ),
                 sg.Push(),
                 sg.Button(
                     "START RECORDING",
@@ -290,12 +295,21 @@ class Configurations:
             [
                 sg.Push(),
                 sg.Text("IDLE", key="playback_status", justification="center"),
+                sg.Text(
+                    "RADAR CLOSED | CAMERA CLOSED",
+                    key="playback_devices",
+                    justification="center",
+                ),
                 sg.Push(),
                 sg.Button(
-                    "PLAY RECORDING",
+                    "START",
                     key="playback_toggle",
                     button_color=("white", "green"),
                 ),
+                sg.Button("STOP", key="playback_stop", disabled=True),
+                sg.Button("RESTART", key="playback_restart", disabled=True),
+                sg.Button("-5 s", key="playback_previous_5s", disabled=True),
+                sg.Button("+5 s", key="playback_next_5s", disabled=True),
             ],
         ]
 
@@ -393,7 +407,6 @@ class Configurations:
                 self.recording_pending
                 or self.snapshot_pending
                 or live_blocked
-                or not self.connected_radar
             )
         self.window["record_toggle"].update(disabled=record_disabled)
 
@@ -433,11 +446,28 @@ class Configurations:
                 self.recording
                 or self.recording_pending
                 or self.snapshot_pending
+                or self.playback
                 or self.playback_pending
             ),
         )
+        transport_disabled = not self.playback
+        for key in (
+            "playback_stop",
+            "playback_restart",
+            "playback_previous_5s",
+            "playback_next_5s",
+        ):
+            self.window[key].update(disabled=transport_disabled)
         for key in ("conn_radar", "conn_cam"):
             self.window[key].update(disabled=live_blocked or self.snapshot_pending)
+
+    def _update_record_device_status(self):
+        status = " | ".join((
+            f"RADAR {'OPEN' if self.connected_radar else 'CLOSED'}",
+            f"CAMERA {'OPEN' if self.connected_cam else 'CLOSED'}",
+        ))
+        self.window["record_devices"].update(status)
+        self.window["playback_devices"].update(status)
 
     def change_connection_radar(self, connection):
         self.connected_radar = connection
@@ -445,6 +475,7 @@ class Configurations:
             "CLOSE RADAR" if connection else "OPEN RADAR",
             button_color=("white", "red" if connection else "green"),
         )
+        self._update_record_device_status()
         self._refresh_mode_controls()
         if not connection:
             self.change_received_messages(())
@@ -460,6 +491,7 @@ class Configurations:
             "CLOSE CAM" if connection else "OPEN CAM",
             button_color=("white", "red" if connection else "green"),
         )
+        self._update_record_device_status()
         self._refresh_mode_controls()
 
     def change_connection_gps(self, connection):
@@ -557,8 +589,8 @@ class Configurations:
         self.playback = bool(payload.get("active"))
         self.playback_pending = False
         self.window["playback_toggle"].update(
-            "STOP PLAYBACK" if self.playback else "PLAY RECORDING",
-            button_color=("white", "red" if self.playback else "green"),
+            "START",
+            button_color=("white", "green"),
         )
         if self.playback:
             total = payload.get("total", 0)

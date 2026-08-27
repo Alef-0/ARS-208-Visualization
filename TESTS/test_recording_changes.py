@@ -5,6 +5,7 @@ import queue
 from tempfile import TemporaryDirectory
 import time
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -13,6 +14,10 @@ import CAPTURE.camera_snapshot_recorder as camera_module
 import CAPTURE.point_cloud_reader as reader_module
 import CAPTURE.point_cloud_recorder as recorder_module
 from CAPTURE.playback import load_recording_entries
+from CAPTURE.playback import PlaybackController
+from GRAPH.graph_draw import Graph_radar
+import MAIN_BASE
+from MENU_BASE import Configurations
 
 
 class FakeWriterCloud:
@@ -260,6 +265,80 @@ class RecordingChangesTests(unittest.TestCase):
             )
             legacy_entries = load_recording_entries(root)
             self.assertIsNone(legacy_entries[0].camera_frame)
+
+
+class RequestedControlChangesTests(unittest.TestCase):
+    class FakePipe:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, message):
+            self.sent.append(message)
+
+    class FakeConfig:
+        connected_radar = False
+        connected_cam = True
+
+        def __init__(self):
+            self.pending = False
+
+        def set_recording_pending(self, starting):
+            self.pending = starting
+
+    def test_record_groups_default_to_unchecked_and_transport_controls_exist(self):
+        layout = Configurations._create_record_layout()
+        elements = {
+            element.Key: element
+            for row in layout
+            for element in row
+            if getattr(element, "Key", None)
+        }
+
+        for channel in range(1, 4):
+            self.assertFalse(elements[f"record_radar_{channel}"].InitialState)
+        self.assertEqual(elements["playback_toggle"].ButtonText, "START")
+        self.assertEqual(elements["playback_stop"].ButtonText, "STOP")
+        self.assertEqual(elements["playback_restart"].ButtonText, "RESTART")
+        self.assertEqual(elements["playback_previous_5s"].ButtonText, "-5 s")
+        self.assertEqual(elements["playback_next_5s"].ButtonText, "+5 s")
+
+    def test_partial_recording_requires_confirmation(self):
+        config = self.FakeConfig()
+        pipe = self.FakePipe()
+        with TemporaryDirectory() as folder:
+            values = {"record_folder": folder, "record_radar_1": True}
+            with patch.object(MAIN_BASE.sg, "popup_ok_cancel", return_value="Cancel"):
+                MAIN_BASE._start_recording(values, config, pipe)
+            self.assertFalse(config.pending)
+            self.assertEqual(pipe.sent, [])
+
+            with patch.object(MAIN_BASE.sg, "popup_ok_cancel", return_value="OK"):
+                MAIN_BASE._start_recording(values, config, pipe)
+
+        self.assertTrue(config.pending)
+        self.assertEqual(pipe.sent[0][0], "record_start")
+
+    def test_graph_resolution_and_ranges_can_be_changed(self):
+        graph = Graph_radar(20, width=640, height=480, x_range=30, y_range=50)
+        self.assertEqual(graph.base_image.shape, (480, 640, 3))
+        self.assertEqual(graph.graph_to_pixel(-30, 0)[0], graph.margin)
+        self.assertEqual(graph.graph_to_pixel(30, 0)[0], 640 - graph.margin)
+
+        graph.set_resolution(900, 700)
+        graph.set_range(40, 80)
+        self.assertEqual(graph.base_image.shape, (700, 900, 3))
+        self.assertEqual((graph.x_range, graph.y_range), (40.0, 80.0))
+
+    def test_playback_restart_and_five_second_seek_choose_expected_frames(self):
+        controller = PlaybackController.__new__(PlaybackController)
+        timestamps = [0.0, 3.0, 6.0, 9.0]
+
+        controller.transport_request = ("seek", 5.0)
+        self.assertEqual(controller._apply_transport_request(1, timestamps), 3)
+        controller.transport_request = ("seek", -5.0)
+        self.assertEqual(controller._apply_transport_request(1, timestamps), 0)
+        controller.transport_request = ("restart", 0.0)
+        self.assertEqual(controller._apply_transport_request(3, timestamps), 0)
 
 
 if __name__ == "__main__":

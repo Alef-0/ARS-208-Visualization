@@ -13,6 +13,10 @@ class Configurations(BaseConfigurations):
         self.playback_width = 1280
         self.playback_height = 720
         self.point_cutoff = 15.0
+        self.graph_width = 800
+        self.graph_height = 600
+        self.graph_x_range = 15
+        self.graph_y_range = 15
         self.calibration_camera = False
         self.calibration_camera_pending = False
         self.calibration_clock = False
@@ -161,6 +165,11 @@ class Configurations(BaseConfigurations):
                 sg.Text("Playback folder"),
                 sg.Input(default_text=str(Path.cwd()), key="snapshot_playback_folder", expand_x=True),
                 sg.FolderBrowse("SELECT", key="snapshot_playback_browse", target="snapshot_playback_folder"),
+                sg.Checkbox(
+                    "Image + PCD",
+                    key="snapshot_playback_synced_only",
+                    default=True,
+                ),
             ],
             [
                 sg.Push(),
@@ -207,13 +216,6 @@ class Configurations(BaseConfigurations):
                 ]]),
             ],
             [
-                sg.Text(
-                    "Recording and snapshot images keep the source resolution.",
-                    expand_x=True,
-                    justification="center",
-                )
-            ],
-            [
                 sg.Push(),
                 sg.Text("1280 × 720", key="playback_resolution_status"),
                 sg.VSep(),
@@ -222,20 +224,35 @@ class Configurations(BaseConfigurations):
             ],
             [sg.HorizontalSeparator()],
             [
-                sg.Push(),
-                sg.Text("Displayed point cutoff (m)"),
-                sg.Input("15", key="point_cutoff", size=(8, 1), justification="right"),
-                sg.Button("APPLY", key="point_cutoff_apply"),
-                sg.Push(),
+                sg.Column([[
+                    sg.Text("Point cutoff (m)"),
+                    sg.Input("15", key="point_cutoff", size=(6, 1), justification="right"),
+                    sg.Button("APPLY", key="point_cutoff_apply"),
+                ]]),
+                sg.VSep(),
+                sg.Column([[
+                    sg.Text("Graph Resolution"),
+                    sg.Input("800", key="graph_width", size=(6, 1), justification="right"),
+                    sg.Text("×"),
+                    sg.Input("600", key="graph_height", size=(6, 1), justification="right"),
+                ], [
+                    sg.Text("Graph Range (m)"),
+                    sg.Text("X ±"),
+                    sg.Input("15", key="graph_x_range", size=(5, 1), justification="right"),
+                    sg.Text("Y 0–"),
+                    sg.Input("15", key="graph_y_range", size=(5, 1), justification="right"),
+                    sg.Button("APPLY", key="graph_settings_apply"),
+                ]]),
             ],
             [
-                sg.Text(
-                    "The radar graph at scale. A red arc marks the cutoff while inside the visible range.",
-                    expand_x=True,
-                    justification="center",
-                )
+                sg.Push(),
+                sg.Text("Cutoff 15.0 m", key="point_cutoff_status"),
+                sg.VSep(),
+                sg.Text("800 × 600", key="graph_resolution_status"),
+                sg.VSep(),
+                sg.Text("X ±15 m | Y 0–15 m", key="graph_range_status"),
+                sg.Push(),
             ],
-            [sg.Push(), sg.Text("15.0 m", key="point_cutoff_status"), sg.Push()],
         ]
 
     @staticmethod
@@ -311,7 +328,6 @@ class Configurations(BaseConfigurations):
             self.recording_pending
             or self.snapshot_pending
             or live_blocked
-            or (not self.recording and not self.connected_radar)
         )
         self.window["record_toggle"].update(disabled=record_disabled)
 
@@ -350,11 +366,20 @@ class Configurations(BaseConfigurations):
                 self.recording
                 or self.recording_pending
                 or self.snapshot_pending
+                or self.playback
                 or self.playback_pending
                 or self.snapshot_playback
                 or self.snapshot_playback_pending
             )
         )
+        transport_disabled = not self.playback
+        for key in (
+            "playback_stop",
+            "playback_restart",
+            "playback_previous_5s",
+            "playback_next_5s",
+        ):
+            self.window[key].update(disabled=transport_disabled)
 
         snapshot_playback_inputs_disabled = (
             self.recording
@@ -365,7 +390,11 @@ class Configurations(BaseConfigurations):
             or self.snapshot_playback
             or self.snapshot_playback_pending
         )
-        for key in ("snapshot_playback_folder", "snapshot_playback_browse"):
+        for key in (
+            "snapshot_playback_folder",
+            "snapshot_playback_browse",
+            "snapshot_playback_synced_only",
+        ):
             self.window[key].update(disabled=snapshot_playback_inputs_disabled)
         self.window["snapshot_playback_toggle"].update(
             disabled=(
@@ -484,7 +513,19 @@ class Configurations(BaseConfigurations):
 
     def change_point_cutoff(self, cutoff):
         self.point_cutoff = cutoff
-        self.window["point_cutoff_status"].update(f"{cutoff:.1f} m")
+        self.window["point_cutoff_status"].update(f"Cutoff {cutoff:.1f} m")
+
+    def change_graph_resolution(self, width, height):
+        self.graph_width = width
+        self.graph_height = height
+        self.window["graph_resolution_status"].update(f"{width} × {height}")
+
+    def change_graph_range(self, x_range, y_range):
+        self.graph_x_range = x_range
+        self.graph_y_range = y_range
+        self.window["graph_range_status"].update(
+            f"X ±{x_range:g} m | Y 0–{y_range:g} m"
+        )
 
     def set_calibration_camera_pending(self):
         self.calibration_camera_pending = True

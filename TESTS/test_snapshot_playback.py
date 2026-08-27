@@ -10,6 +10,7 @@ import cv2 as cv
 
 import CAPTURE.snapshot_playback as playback_module
 from GRAPH.graph_draw import Graph_radar
+from menu_configurations import Configurations
 
 
 class FakeConnection:
@@ -43,6 +44,86 @@ class FakeShutdownEvent:
 
 
 class SnapshotPlaybackTests(unittest.TestCase):
+    @staticmethod
+    def _elements(layout):
+        for row in layout:
+            for element in row:
+                yield element
+                rows = getattr(element, "Rows", None)
+                if rows:
+                    yield from SnapshotPlaybackTests._elements(rows)
+
+    def test_synced_only_checkbox_defaults_to_checked(self):
+        elements = {
+            element.Key: element
+            for element in self._elements(Configurations._create_snapshot_layout())
+            if getattr(element, "Key", None)
+        }
+
+        self.assertTrue(elements["snapshot_playback_synced_only"].InitialState)
+
+    def test_synced_only_loader_omits_unpaired_entries(self):
+        synced = SimpleNamespace(point_cloud=Path("frame.pcd"), camera_frame=Path("camera.jpg"))
+        pcd_only = SimpleNamespace(point_cloud=Path("only.pcd"), camera_frame=None)
+        image_only = SimpleNamespace(point_cloud=None, camera_frame=Path("only.jpg"))
+
+        with patch.object(
+            playback_module,
+            "load_recording_entries",
+            return_value=(pcd_only, synced, image_only),
+        ):
+            _, entries = playback_module._load_entries(".", synced_only=True)
+            _, all_entries = playback_module._load_entries(".", synced_only=False)
+
+        self.assertEqual(entries, [synced])
+        self.assertEqual(all_entries, [pcd_only, synced, image_only])
+
+    def test_synced_only_loader_warns_when_folder_has_one_modality(self):
+        pcd_only = SimpleNamespace(point_cloud=Path("only.pcd"), camera_frame=None)
+
+        with patch.object(
+            playback_module,
+            "load_recording_entries",
+            return_value=(pcd_only,),
+        ):
+            with self.assertRaisesRegex(ValueError, "No synced image \\+ PCD pairs"):
+                playback_module._load_entries(".", synced_only=True)
+
+    def test_synced_only_warning_does_not_render_any_entry(self):
+        pool = FakePool()
+        controller = playback_module.SnapshotPlaybackController(
+            FakeConnection([]),
+            pool,
+            FakeShutdownEvent(),
+            {},
+        )
+
+        with (
+            patch.object(
+                playback_module,
+                "_load_entries",
+                side_effect=ValueError("No synced image + PCD pairs were found"),
+            ),
+            patch.object(controller, "_render") as render,
+            patch.object(controller, "_close_windows"),
+        ):
+            controller._play({"folder": ".", "synced_only": True})
+
+        render.assert_not_called()
+        self.assertEqual(pool.items[0][0], "snapshot_playback_error")
+
+    def test_graph_resolution_and_range_share_one_apply_button(self):
+        layout = Configurations._create_general_configurations_layout()
+        elements = {
+            element.Key: element
+            for element in self._elements(layout)
+            if getattr(element, "Key", None)
+        }
+
+        self.assertIn("graph_settings_apply", elements)
+        self.assertNotIn("graph_resolution_apply", elements)
+        self.assertNotIn("graph_range_apply", elements)
+
     def test_playback_starts_playing_and_processes_clicks_while_paused(self):
         connection = FakeConnection([
             ("snapshot_playback_pause", None),

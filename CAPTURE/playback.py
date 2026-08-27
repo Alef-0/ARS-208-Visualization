@@ -1,3 +1,4 @@
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -171,8 +172,15 @@ class PlaybackController:
         self.pool = pool
         self.shutdown_event = shutdown_event
         self.filters = Filter_graph(initial_values)
-        self.graph = Graph_radar(initial_values.get("point_cutoff", 15.0))
+        self.graph = Graph_radar(
+            initial_values.get("point_cutoff", 15.0),
+            initial_values.get("graph_width", 800),
+            initial_values.get("graph_height", 600),
+            initial_values.get("graph_x_range", 15.0),
+            initial_values.get("graph_y_range", 15.0),
+        )
         self.stop_requested = False
+        self.transport_request = None
         self.width = DEFAULT_PLAYBACK_WIDTH
         self.height = DEFAULT_PLAYBACK_HEIGHT
 
@@ -193,6 +201,14 @@ class PlaybackController:
                 self._set_resolution(value)
             elif event == "point_cutoff":
                 self.graph.set_distance_cutoff(value.get("distance", 15.0))
+            elif event == "graph_resolution":
+                self.graph.set_resolution(
+                    value.get("width", 800), value.get("height", 600)
+                )
+            elif event == "graph_range":
+                self.graph.set_range(
+                    value.get("x_range", 15.0), value.get("y_range", 15.0)
+                )
             elif isinstance(event, str) and event.startswith("filter"):
                 self.filters.update_values(event, value)
         self._close_windows()
@@ -211,14 +227,21 @@ class PlaybackController:
         try:
             entries = load_recording_entries(folder)
             self.stop_requested = False
+            self.transport_request = None
+            timestamps = [entry.recorded_at.timestamp() for entry in entries]
+            started_at = timestamps[0]
+            duration = max(0.0, timestamps[-1] - started_at)
             _put_status(self.pool, "playback_state", {
                 "active": True, "folder": str(Path(folder).expanduser()),
                 "current": 0, "total": len(entries), "mode": "record",
             })
-            for index, entry in enumerate(entries, start=1):
+            index = 0
+            while index < len(entries):
                 self._process_controls()
                 if self.stop_requested or self.shutdown_event.is_set():
                     break
+                index = self._apply_transport_request(index, timestamps)
+                entry = entries[index]
 
                 if entry.point_cloud is not None:
                     reader = PointCloudReader(entry.point_cloud)
@@ -241,19 +264,23 @@ class PlaybackController:
                     else entry.camera_frame.name
                 )
                 _put_status(self.pool, "playback_progress", {
-                    "current": index,
+                    "current": index + 1,
                     "total": len(entries),
                     "file": current_file,
                     "point_cloud": entry.point_cloud.name if entry.point_cloud else None,
                     "image": entry.camera_frame.name if entry.camera_frame else None,
+                    "elapsed": max(0.0, timestamps[index] - started_at),
+                    "duration": duration,
                     "mode": "record",
                 })
-                if index < len(entries):
+                if index + 1 < len(entries):
                     delay = max(
                         0.0,
-                        entries[index].recorded_at.timestamp() - entry.recorded_at.timestamp(),
+                        timestamps[index + 1] - timestamps[index],
                     )
                     self._wait(delay)
+                if self.transport_request is None:
+                    index += 1
             completed = not self.stop_requested and not self.shutdown_event.is_set()
             _put_status(self.pool, "playback_state", {
                 "active": False, "completed": completed,
@@ -268,15 +295,38 @@ class PlaybackController:
         finally:
             self._close_windows()
 
+    def _apply_transport_request(self, index, timestamps):
+        request = self.transport_request
+        self.transport_request = None
+        if request is None:
+            return index
+        action, value = request
+        if action == "restart":
+            return 0
+        target = timestamps[index] + float(value)
+        return min(len(timestamps) - 1, bisect_left(timestamps, target))
+
     def _handle_control(self, event, value):
         if event == "STOP":
             self.shutdown_event.set()
         elif event == "playback_stop":
             self.stop_requested = True
+        elif event == "playback_restart":
+            self.transport_request = ("restart", 0.0)
+        elif event == "playback_seek":
+            self.transport_request = ("seek", float(value.get("seconds", 0.0)))
         elif event == "playback_resolution":
             self._set_resolution(value)
         elif event == "point_cutoff":
             self.graph.set_distance_cutoff(value.get("distance", 15.0))
+        elif event == "graph_resolution":
+            self.graph.set_resolution(
+                value.get("width", 800), value.get("height", 600)
+            )
+        elif event == "graph_range":
+            self.graph.set_range(
+                value.get("x_range", 15.0), value.get("y_range", 15.0)
+            )
         elif isinstance(event, str) and event.startswith("filter"):
             self.filters.update_values(event, value)
 
@@ -292,7 +342,11 @@ class PlaybackController:
     def _wait(self, seconds):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            if self.shutdown_event.is_set() or self.stop_requested:
+            if (
+                self.shutdown_event.is_set()
+                or self.stop_requested
+                or self.transport_request is not None
+            ):
                 return
             remaining = max(0.0, deadline - time.monotonic())
             if not self.connection.poll(min(0.05, remaining)):
@@ -303,6 +357,8 @@ class PlaybackController:
                 self.shutdown_event.set()
                 return
             self._handle_control(event, value)
+            if self.transport_request is not None:
+                return
 
     def _close_windows(self):
         _destroy_window("RADAR")

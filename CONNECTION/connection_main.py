@@ -151,7 +151,13 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
     frame_history = {channel: deque() for channel in RADAR_CHANNELS}
     recording_ready: dict[int, bool] = {}
     received_message_ids: set[int] = set()
-    graph = Graph_radar(initial_values.get("point_cutoff", 15.0))
+    graph = Graph_radar(
+        initial_values.get("point_cutoff", 15.0),
+        initial_values.get("graph_width", 800),
+        initial_values.get("graph_height", 600),
+        initial_values.get("graph_x_range", 15.0),
+        initial_values.get("graph_y_range", 15.0),
+    )
     filters = Filter_graph(initial_values)
 
     def report_progress(channel, count):
@@ -284,14 +290,6 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                     elif event == "choose":
                         radar_choice = values
                     elif event == "record_start":
-                        if not connection.connected:
-                            _put_status(
-                                pool,
-                                "recording_error",
-                                "Connect the radar before starting a recording",
-                                critical=True,
-                            )
-                            continue
                         try:
                             folders = recording.start(values["folder"], values["channels"])
                             recording_ready.clear()
@@ -318,6 +316,15 @@ def create_connection_communication(initial_values, pipe, pool, shutdown_event):
                         save_manual_snapshot(values)
                     elif event == "point_cutoff":
                         graph.set_distance_cutoff(values.get("distance", 15.0))
+                    elif event == "graph_resolution":
+                        graph.set_resolution(
+                            values.get("width", 800), values.get("height", 600)
+                        )
+                    elif event == "graph_range":
+                        graph.set_range(
+                            values.get("x_range", 15.0),
+                            values.get("y_range", 15.0),
+                        )
                     elif event == "camera_latency_adjustment":
                         try:
                             camera_delay_seconds = float(
