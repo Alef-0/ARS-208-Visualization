@@ -53,6 +53,7 @@ class GStreamerPipeline:
         self.display_height = DEFAULT_DISPLAY_HEIGHT
         self.pipeline_latency_ms = CAMERA_PIPELINE_LATENCY_MS
         self.latency_adjustment_ms = 250.0
+        self.recording_interval_ms = 250.0
         self.calibration_mode = False
         self.calibration_recording = False
         self.snapshot_recorder = CameraSnapshotRecorder(self._report_snapshot)
@@ -189,6 +190,24 @@ class GStreamerPipeline:
         if restart:
             self.exit_reason = _RESULT_RESTART
         return restart
+
+    def _set_recording_interval(self, value):
+        try:
+            interval_ms = float(value.get("interval_ms"))
+            if interval_ms <= 0:
+                raise ValueError
+            self.snapshot_recorder.set_snapshot_interval_seconds(interval_ms / 1000.0)
+        except (AttributeError, TypeError, ValueError):
+            self._put_status(
+                "camera_recording_interval_error",
+                "Camera recording interval must be a number greater than zero",
+            )
+            return
+        self.recording_interval_ms = interval_ms
+        self._put_status(
+            "camera_recording_interval_state",
+            {"interval_ms": interval_ms},
+        )
 
     def _set_display_resolution(self, value):
         try:
@@ -432,6 +451,8 @@ class GStreamerPipeline:
                     restart = self._set_calibration_camera(value.get("active")) or restart
                 elif event == "camera_latency_settings":
                     restart = self._set_latency_settings(value) or restart
+                elif event == "camera_recording_interval":
+                    self._set_recording_interval(value)
                 elif event == "record_start":
                     self._start_snapshot_recording(value)
                 elif event == "record_stop":

@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import queue
 from tempfile import TemporaryDirectory
 import time
 import unittest
@@ -218,11 +219,24 @@ class RecordingChangesTests(unittest.TestCase):
 
         self.assertEqual(metadata[0]["camera_frame"], "camera_000001.jpg")
         self.assertEqual(metadata[0]["captured_at"], captured_at.isoformat(timespec="microseconds"))
+        self.assertEqual(metadata[0]["captured_at_unix"], 1787745600.0)
         self.assertEqual(
             metadata[0]["adjusted_at"],
             "2026-08-26T11:59:59.750000+00:00",
         )
+        self.assertEqual(metadata[0]["adjusted_at_unix"], 1787745599.75)
         self.assertEqual(metadata[0]["latency_adjustment_ms"], 250.0)
+
+    def test_camera_recording_interval_can_be_changed_to_thirty_fps(self):
+        recorder = camera_module.CameraSnapshotRecorder()
+        recorder.active = True
+        recorder._queue = queue.Queue()
+        recorder.set_snapshot_interval_seconds(1 / 30)
+        frame = np.zeros((2, 2, 3), dtype=np.uint8)
+
+        self.assertTrue(recorder.submit(frame, monotonic_time=1.0))
+        self.assertFalse(recorder.submit(frame, monotonic_time=1.02))
+        self.assertTrue(recorder.submit(frame, monotonic_time=1.034))
 
     def test_playback_loader_supports_new_and_legacy_metadata(self):
         timestamp = "2026-07-29T12:00:00+00:00"

@@ -34,6 +34,7 @@ class CameraSnapshotRecorder:
         self._calibration_records: list[dict] = []
         self._latency_adjustment_ms = 0.0
         self._calibration = False
+        self.snapshot_interval_seconds = SNAPSHOT_INTERVAL_SECONDS
 
     def start(
         self,
@@ -84,7 +85,7 @@ class CameraSnapshotRecorder:
         now = time.monotonic() if monotonic_time is None else monotonic_time
         if (
             self._last_snapshot_time is not None
-            and now - self._last_snapshot_time < SNAPSHOT_INTERVAL_SECONDS
+            and now - self._last_snapshot_time < self.snapshot_interval_seconds
         ):
             return False
         timestamp = (captured_at or datetime.now().astimezone()).isoformat(
@@ -102,6 +103,12 @@ class CameraSnapshotRecorder:
 
     def set_latency_adjustment_ms(self, value: float) -> None:
         self._latency_adjustment_ms = float(value)
+
+    def set_snapshot_interval_seconds(self, value: float) -> None:
+        value = float(value)
+        if value <= 0:
+            raise ValueError("Camera recording interval must be greater than zero")
+        self.snapshot_interval_seconds = value
 
     def stop(self) -> int:
         if not self.active:
@@ -151,13 +158,16 @@ class CameraSnapshotRecorder:
     def _record_calibration_timestamp(self, filename: str, captured_at: str) -> None:
         if not self._calibration_metadata_paths:
             return
-        adjusted_at = datetime.fromisoformat(captured_at) - timedelta(
+        captured_datetime = datetime.fromisoformat(captured_at)
+        adjusted_at = captured_datetime - timedelta(
             milliseconds=self._latency_adjustment_ms
         )
         self._calibration_records.append({
             "camera_frame": filename,
             "captured_at": captured_at,
+            "captured_at_unix": captured_datetime.timestamp(),
             "adjusted_at": adjusted_at.isoformat(timespec="microseconds"),
+            "adjusted_at_unix": adjusted_at.timestamp(),
             "latency_adjustment_ms": self._latency_adjustment_ms,
         })
         self._write_calibration_metadata()

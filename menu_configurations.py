@@ -192,22 +192,34 @@ class Configurations(BaseConfigurations):
     def _create_general_configurations_layout():
         return [
             [
-                sg.Push(),
-                sg.Text("Playback / live camera resolution"),
-                sg.Input("1280", key="playback_width", size=(8, 1), justification="right"),
-                sg.Text("×"),
-                sg.Input("720", key="playback_height", size=(8, 1), justification="right"),
-                sg.Button("APPLY", key="playback_resolution_apply"),
-                sg.Push(),
+                sg.Column([[
+                    sg.Text("Camera Resolution"),
+                    sg.Input("1280", key="playback_width", size=(8, 1), justification="right"),
+                    sg.Text("×"),
+                    sg.Input("720", key="playback_height", size=(8, 1), justification="right"),
+                    sg.Button("APPLY", key="playback_resolution_apply"),
+                ]], expand_x=True),
+                sg.VSep(),
+                sg.Column([[
+                    sg.Text("Recording interval (ms)"),
+                    sg.Input("250", key="camera_recording_interval", size=(9, 1), justification="right"),
+                    sg.Button("APPLY", key="recording_interval_apply"),
+                ]]),
             ],
             [
                 sg.Text(
-                    "This resizes only displayed camera images. Recording and snapshot images keep the source resolution.",
+                    "Recording and snapshot images keep the source resolution.",
                     expand_x=True,
                     justification="center",
                 )
             ],
-            [sg.Push(), sg.Text("1280 × 720", key="playback_resolution_status"), sg.Push()],
+            [
+                sg.Push(),
+                sg.Text("1280 × 720", key="playback_resolution_status"),
+                sg.VSep(),
+                sg.Text("250 ms (4 FPS)", key="recording_interval_status"),
+                sg.Push(),
+            ],
             [sg.HorizontalSeparator()],
             [
                 sg.Push(),
@@ -218,7 +230,7 @@ class Configurations(BaseConfigurations):
             ],
             [
                 sg.Text(
-                    "The radar graph remains 800 × 600 with a 15 m scale. A red arc marks the cutoff while it is inside the visible range.",
+                    "The radar graph at scale. A red arc marks the cutoff while inside the visible range.",
                     expand_x=True,
                     justification="center",
                 )
@@ -231,11 +243,13 @@ class Configurations(BaseConfigurations):
         return [
             [
                 sg.Push(),
-                sg.Text("rtspsrc latency (ms)"),
-                sg.Input("250", key="camera_pipeline_latency", size=(9, 1), justification="right"),
-                sg.Text("Program-wide pipeline latency adjustment (ms)"),
-                sg.Input("250", key="camera_latency_adjustment", size=(9, 1), justification="right"),
-                sg.Button("APPLY LATENCIES", key="calibration_latency_apply"),
+                sg.Column([[
+                    sg.Text("Camera latency"),
+                    sg.Input("250", key="camera_pipeline_latency", size=(9, 1), justification="right"),
+                    sg.Text("Pipeline Adjustment (ms)"),
+                    sg.Input("250", key="camera_latency_adjustment", size=(9, 1), justification="right"),
+                    sg.Button("APPLY LATENCIES", key="calibration_latency_apply"),
+                ]]),
                 sg.Push(),
             ],
             [sg.Push(), sg.Text("250 ms / 250 ms", key="calibration_latency_status"), sg.Push()],
@@ -515,6 +529,12 @@ class Configurations(BaseConfigurations):
     def change_calibration_latencies(self, pipeline_latency_ms, adjustment_ms):
         self.window["calibration_latency_status"].update(
             f"{pipeline_latency_ms} ms / {adjustment_ms:g} ms"
+        )
+
+    def change_recording_interval(self, interval_ms):
+        frames_per_second = 1000.0 / interval_ms
+        self.window["recording_interval_status"].update(
+            f"{interval_ms:g} ms ({frames_per_second:.2f} FPS)"
         )
 
     def show_calibration_error(self, message):

@@ -65,6 +65,16 @@ def _camera_latency_settings(values):
     return pipeline_latency_ms, adjustment_ms
 
 
+def _camera_recording_interval(values):
+    try:
+        interval_ms = float(str(values.get("camera_recording_interval", "250")).strip())
+    except ValueError as error:
+        raise ValueError("Camera recording interval must be numeric") from error
+    if interval_ms <= 0:
+        raise ValueError("Camera recording interval must be greater than zero")
+    return interval_ms
+
+
 def _request_calibration_camera(
     values,
     config,
@@ -85,6 +95,7 @@ def _request_calibration_camera(
 
     try:
         pipeline_latency_ms, adjustment_ms = _camera_latency_settings(values)
+        recording_interval_ms = _camera_recording_interval(values)
     except ValueError as error:
         config.show_calibration_error(str(error))
         return
@@ -93,6 +104,7 @@ def _request_calibration_camera(
     runtime.pending_calibration_camera = {
         "pipeline_latency_ms": pipeline_latency_ms,
         "latency_adjustment_ms": adjustment_ms,
+        "recording_interval_ms": recording_interval_ms,
     }
     if config.recording or config.recording_pending:
         base._request_recording_stop(config, runtime, send_cam)
@@ -125,7 +137,12 @@ def _maybe_open_calibration_camera(config, runtime, send_cam):
     ):
         return
     runtime.pending_calibration_camera = None
+    recording_interval_ms = payload.pop("recording_interval_ms")
     send_cam.send(("camera_latency_settings", payload))
+    send_cam.send((
+        "camera_recording_interval",
+        {"interval_ms": recording_interval_ms},
+    ))
     send_cam.send(("calibration_camera", {"active": True}))
 
 
@@ -352,6 +369,17 @@ def _handle_gui_event(
             send_snapshot_playback,
         )
         return
+    if event == "recording_interval_apply":
+        try:
+            interval_ms = _camera_recording_interval(values)
+        except ValueError as error:
+            config.show_calibration_error(str(error))
+            return
+        send_cam.send((
+            "camera_recording_interval",
+            {"interval_ms": interval_ms},
+        ))
+        return
     if event == "calibration_clock_start":
         _start_calibration_clock(values, config, runtime)
         return
@@ -407,6 +435,12 @@ def _apply_status_message(
         )
         return
     if message == "camera_latency_error":
+        config.show_calibration_error(payload)
+        return
+    if message == "camera_recording_interval_state":
+        config.change_recording_interval(payload["interval_ms"])
+        return
+    if message == "camera_recording_interval_error":
         config.show_calibration_error(payload)
         return
     if message == "camera_snapshot" and payload.get("calibration"):

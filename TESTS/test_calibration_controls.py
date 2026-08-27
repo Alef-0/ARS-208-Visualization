@@ -60,6 +60,7 @@ class CalibrationControlTests(unittest.TestCase):
             {
                 "camera_pipeline_latency": "100",
                 "camera_latency_adjustment": "-25.5",
+                "camera_recording_interval": "33.333",
             },
             config,
             runtime,
@@ -78,7 +79,11 @@ class CalibrationControlTests(unittest.TestCase):
 
         self.assertEqual(camera.sent[0][0], "camera_latency_settings")
         self.assertEqual(camera.sent[0][1]["pipeline_latency_ms"], 100)
-        self.assertEqual(camera.sent[1], ("calibration_camera", {"active": True}))
+        self.assertEqual(
+            camera.sent[1],
+            ("camera_recording_interval", {"interval_ms": 33.333}),
+        )
+        self.assertEqual(camera.sent[2], ("calibration_camera", {"active": True}))
 
     def test_delayed_calibration_recording_is_camera_only(self):
         config = FakeConfig()

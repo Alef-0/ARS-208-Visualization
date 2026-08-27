@@ -2,6 +2,7 @@ FreeSimpleGUI
 bitstring
 numpy
 opencv-python
+pytesseract
 pypcd4
 PyGObject
 requests
