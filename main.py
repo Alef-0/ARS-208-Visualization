@@ -7,17 +7,16 @@ import time
 from multiprocessing import get_context
 from queue import Empty
 
-import sitecustomize
 import FreeSimpleGUI as sg
 
-import MAIN_BASE as base
+import application_core as base
 from CALIBRATION.calibration_screen_clock import run_calibration_clock
-from CAMERA.camera_gstreamer import gstreamer_main
-from CONNECTION.connection_main import create_connection_communication
-from GPS.gps_connection import main as gps_main
+from sensors.camera.camera_gstreamer import gstreamer_main
+from sensors.radar.connection_main import create_connection_communication
+from sensors.gps.gps_connection import main as gps_main
 from menu_configurations import Configurations
-from CAPTURE.playback import playback_main
-from CAPTURE.snapshot_playback import snapshot_playback_main
+from processing.playback.playback import playback_main
+from processing.playback.snapshot_playback import snapshot_playback_main
 
 
 @dataclass
@@ -84,8 +83,8 @@ def _graph_range(values):
 
 def _camera_latency_settings(values):
     try:
-        pipeline_latency_ms = int(str(values.get("camera_pipeline_latency", "250")).strip())
-        adjustment_ms = float(str(values.get("camera_latency_adjustment", "250")).strip())
+        pipeline_latency_ms = int(str(values.get("camera_pipeline_latency", "145")).strip())
+        adjustment_ms = float(str(values.get("camera_latency_adjustment", "109")).strip())
     except ValueError as error:
         raise ValueError("Both camera latency values must be numeric") from error
     if pipeline_latency_ms < 0:
@@ -93,14 +92,14 @@ def _camera_latency_settings(values):
     return pipeline_latency_ms, adjustment_ms
 
 
-def _camera_recording_interval(values):
+def _camera_recording_rate(values):
     try:
-        interval_ms = float(str(values.get("camera_recording_interval", "250")).strip())
+        frames_per_30 = int(str(values.get("camera_recording_rate", "30")).strip())
     except ValueError as error:
-        raise ValueError("Camera recording interval must be numeric") from error
-    if interval_ms <= 0:
-        raise ValueError("Camera recording interval must be greater than zero")
-    return interval_ms
+        raise ValueError("Recorded camera frames must be a whole number") from error
+    if not 1 <= frames_per_30 <= 30:
+        raise ValueError("Recorded camera frames must be between 1 and 30")
+    return frames_per_30
 
 
 def _request_calibration_camera(
@@ -123,7 +122,7 @@ def _request_calibration_camera(
 
     try:
         pipeline_latency_ms, adjustment_ms = _camera_latency_settings(values)
-        recording_interval_ms = _camera_recording_interval(values)
+        recording_frames_per_30 = _camera_recording_rate(values)
     except ValueError as error:
         config.show_calibration_error(str(error))
         return
@@ -132,7 +131,7 @@ def _request_calibration_camera(
     runtime.pending_calibration_camera = {
         "pipeline_latency_ms": pipeline_latency_ms,
         "latency_adjustment_ms": adjustment_ms,
-        "recording_interval_ms": recording_interval_ms,
+        "recording_frames_per_30": recording_frames_per_30,
     }
     if config.recording or config.recording_pending:
         base._request_recording_stop(config, runtime, send_cam)
@@ -165,11 +164,11 @@ def _maybe_open_calibration_camera(config, runtime, send_cam):
     ):
         return
     runtime.pending_calibration_camera = None
-    recording_interval_ms = payload.pop("recording_interval_ms")
+    recording_frames_per_30 = payload.pop("recording_frames_per_30")
     send_cam.send(("camera_latency_settings", payload))
     send_cam.send((
-        "camera_recording_interval",
-        {"interval_ms": recording_interval_ms},
+        "camera_recording_rate",
+        {"frames_per_30": recording_frames_per_30},
     ))
     send_cam.send(("calibration_camera", {"active": True}))
 
@@ -184,7 +183,7 @@ def _start_calibration_clock(values, config, runtime):
         recording_root = Path(values.get("record_folder", "")).expanduser()
         if not recording_root.is_dir():
             config.show_calibration_error(
-                "Select an existing recording destination before starting the clock"
+                "Select an existing recording destination before starting barcode calibration"
             )
             return
 
@@ -203,20 +202,20 @@ def _start_calibration_clock(values, config, runtime):
         runtime.calibration_recording_deadline = None
         runtime.calibration_recording_root = None
         config.window["calibration_status"].update(
-            "CLOCK ACTIVE — CAMERA 4 IS NOT OPEN, SO RECORDING WAS NOT SCHEDULED"
+            "BARCODE ACTIVE — CAMERA 4 IS NOT OPEN, SO RECORDING WAS NOT SCHEDULED"
         )
         return
     if config.calibration_recording:
         runtime.calibration_recording_deadline = None
         runtime.calibration_recording_root = None
         config.window["calibration_status"].update(
-            "CLOCK ACTIVE — CAMERA 4 IS ALREADY RECORDING"
+            "BARCODE ACTIVE — CAMERA 4 IS ALREADY RECORDING"
         )
         return
     assert recording_root is not None
     runtime.calibration_recording_root = str(recording_root.resolve())
     runtime.calibration_recording_deadline = time.monotonic() + 3.0
-    config.window["calibration_status"].update("CLOCK ACTIVE — RECORDING IN 3 SECONDS")
+    config.window["calibration_status"].update("BARCODE ACTIVE — RECORDING IN 3 SECONDS")
 
 
 def _service_calibration(config, runtime, send_cam):
@@ -238,7 +237,7 @@ def _service_calibration(config, runtime, send_cam):
     if not (config.calibration_camera and config.connected_cam):
         runtime.calibration_recording_root = None
         config.window["calibration_status"].update(
-            "CLOCK ACTIVE — CAMERA 4 CLOSED BEFORE RECORDING"
+            "BARCODE ACTIVE — CAMERA 4 CLOSED BEFORE RECORDING"
         )
         return
 
@@ -416,15 +415,15 @@ def _handle_gui_event(
             send_snapshot_playback,
         )
         return
-    if event == "recording_interval_apply":
+    if event == "recording_rate_apply":
         try:
-            interval_ms = _camera_recording_interval(values)
+            frames_per_30 = _camera_recording_rate(values)
         except ValueError as error:
             config.show_calibration_error(str(error))
             return
         send_cam.send((
-            "camera_recording_interval",
-            {"interval_ms": interval_ms},
+            "camera_recording_rate",
+            {"frames_per_30": frames_per_30},
         ))
         return
     if event == "calibration_clock_start":
@@ -487,11 +486,17 @@ def _apply_status_message(
     if message == "camera_latency_error":
         config.show_calibration_error(payload)
         return
-    if message == "camera_recording_interval_state":
-        config.change_recording_interval(payload["interval_ms"])
+    if message == "camera_recording_rate_state":
+        config.change_recording_rate(payload["frames_per_30"])
         return
-    if message == "camera_recording_interval_error":
+    if message == "camera_recording_rate_error":
         config.show_calibration_error(payload)
+        return
+    if message == "camera_recording_drop":
+        config.change_camera_recording_drop(payload)
+        return
+    if message == "camera_ntp_time":
+        config.change_camera_ntp(payload)
         return
     if message == "camera_snapshot" and payload.get("calibration"):
         return
@@ -500,6 +505,9 @@ def _apply_status_message(
         message, payload, config, runtime,
         send_radar, send_cam, send_playback,
     )
+
+    if message == "change_cam" and not payload:
+        config.change_camera_ntp({"available": False})
 
     if message in ("change_radar", "change_cam"):
         _maybe_start_snapshot_playback(config, runtime, send_snapshot_playback)
