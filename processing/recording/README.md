@@ -79,8 +79,8 @@ silently discarded.
 
 The JPEG writer uses a bounded queue of eight selected frames. A full queue
 drops that image, increments an explicit counter, and reports a warning while
-the recording continues. PTS-estimated upstream losses and invalid-timestamp
-rejections are counted separately.
+the recording continues. Invalid-timestamp rejections are counted separately.
+Unusual PTS gaps are retained as candidates but are not claimed as losses.
 
 ## Manual snapshots
 
@@ -121,13 +121,28 @@ A channel-4 calibration folder contains JPEGs plus:
 | File | Purpose |
 | --- | --- |
 | `camera_timestamps.jsonl` | Append-only timing journal, one object per saved frame |
-| `camera_timestamps.json` | Materialized JSON array of the journal |
-| `camera_recording_summary.json` | Start/stop information and saved/lost counters |
+| `camera_timing_session.json` | Stable recording settings and per-restart clock anchors |
+| `camera_timing_events.jsonl` | Sparse RTCP, jitter-buffer, and timing warning events |
+| `camera_recording_summary.json` | Start/stop, saved/drop counts, and transport totals |
 
-Each timing row retains raw PTS, pipeline running time, PTS-derived time,
-camera NTP, host receipt, hybrid attempted capture time, the configured latency
-adjustment, corrected time, and save time. The JSONL file is the more resilient
-record if a run ends before the final JSON array is materialized.
+The JSONL journal is the single canonical frame manifest. A compact row stores
+the image name, stream epoch, PTS, running time, host receipt clocks, raw and
+interpreted reference timestamp, host-anchored media time, adjusted exposure
+estimate, save time, and flags. Repeated values such as decoder choice,
+pipeline latency, the 109 ms adjustment, and pipeline-zero anchors live in the
+session file.
+
+`media_unix_ns` is computed from the moment the pipeline clock was anchored to
+the host plus the frame running time. `estimated_exposure_unix_ns` subtracts the
+configured application adjustment exactly once. Reference NTP remains an
+independent observation and does not correct either value.
+
+The summary distinguishes confirmed frames not saved (writer overflow or
+invalid timing) from unusual PTS-gap candidates. `num_lost`, `num_late`,
+`num_duplicates`, and retransmission fields are aggregated RTP jitter-buffer
+packet counters; per-pipeline values are retained in
+`transport_stats_by_epoch` so a restart does not overwrite earlier evidence.
+They must not be interpreted as decoded-frame counts.
 
 ## Compatibility rules
 
@@ -139,3 +154,6 @@ record if a run ends before the final JSON array is materialized.
   of synchronization. Use `recording.json`.
 - Preserve raw times and the applied delay when changing synchronization logic;
   derived associations alone cannot be recalculated later.
+- Historical `camera_timestamps.json` and verbose JSONL rows remain readable by
+  `analyze_calibration_recording_offset.py`; new recordings do not duplicate the
+  journal into a JSON array.

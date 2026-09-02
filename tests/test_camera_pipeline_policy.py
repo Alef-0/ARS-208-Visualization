@@ -18,17 +18,37 @@ from sensors.camera.camera_pipeline_policy import (
     build_camera_pipeline,
 )
 from sensors.camera.camera_gstreamer import GStreamerPipeline
+from sensors.camera.camera_reference_clock import (
+    NTP_UNIX_EPOCH_DELTA_SECONDS,
+    ReferenceClockObserver,
+    reference_timestamp_for_buffer,
+)
 
 
 class FakeBuffer:
-    def __init__(self, pts, reference_timestamp=None):
+    def __init__(
+        self,
+        pts,
+        reference_timestamp=None,
+        reference_clock="timestamp/x-unix",
+    ):
         self.pts = pts
         self._reference_timestamp = reference_timestamp
+        self._reference_clock = reference_clock
 
     def get_reference_timestamp_meta(self, _caps):
         if self._reference_timestamp is None:
             return None
-        return type("ReferenceMeta", (), {"timestamp": self._reference_timestamp})()
+        reference = type(
+            "ReferenceCaps",
+            (),
+            {"to_string": lambda _self: self._reference_clock},
+        )()
+        return type(
+            "ReferenceMeta",
+            (),
+            {"timestamp": self._reference_timestamp, "reference": reference},
+        )()
 
 
 class FakeSegment:
@@ -77,6 +97,40 @@ class FakeSink:
         return self.sample
 
 
+class FakeStats:
+    def __init__(self, values):
+        self.values = values
+
+    def get_value(self, name):
+        return self.values[name]
+
+
+class FakeJitterBuffer:
+    def __init__(self, values):
+        self.stats = FakeStats(values)
+        self.properties = {}
+
+    @staticmethod
+    def find_property(_name):
+        return object()
+
+    def set_property(self, name, value):
+        self.properties[name] = value
+
+    def get_property(self, name):
+        if name != "stats":
+            raise KeyError(name)
+        return self.stats
+
+
+class FakeManager:
+    def __init__(self):
+        self.connections = []
+
+    def connect(self, signal, callback):
+        self.connections.append((signal, callback))
+
+
 class CameraPipelinePolicyTests(unittest.TestCase):
     def test_desktop_prefers_rtx_and_keeps_cpu_fallback(self):
         elements = {*RTX_BACKEND.required_elements, *CPU_BACKEND.required_elements}
@@ -101,6 +155,14 @@ class CameraPipelinePolicyTests(unittest.TestCase):
             factory_find=lambda name: object() if name in elements else None,
         )
         self.assertEqual(backends, (CPU_BACKEND,))
+
+    def test_available_hardware_decoder_does_not_require_cpu_plugin(self):
+        elements = set(RTX_BACKEND.required_elements)
+        backends = available_decoder_backends(
+            factory_find=lambda name: object() if name in elements else None,
+            jetson=False,
+        )
+        self.assertEqual(backends, (RTX_BACKEND,))
 
     def test_pipeline_contains_selected_decoder_and_low_latency_sinks(self):
         description = build_camera_pipeline(
@@ -130,6 +192,45 @@ class CameraPipelinePolicyTests(unittest.TestCase):
         self.assertFalse(result.valid)
         self.assertIn("invalid PTS", result.reason)
 
+    def test_declared_ntp_reference_is_converted_to_unix(self):
+        unix_ns = 1_800_000_000 * Gst.SECOND
+        raw_ntp_ns = unix_ns + NTP_UNIX_EPOCH_DELTA_SECONDS * Gst.SECOND
+
+        reference = reference_timestamp_for_buffer(FakeBuffer(
+            Gst.SECOND,
+            reference_timestamp=raw_ntp_ns,
+            reference_clock="timestamp/x-ntp,host=(string)camera",
+        ))
+
+        self.assertEqual(reference.raw_ns, raw_ntp_ns)
+        self.assertEqual(reference.unix_ns, unix_ns)
+
+    def test_rtp_manager_exposes_jitterbuffer_counters(self):
+        observer = ReferenceClockObserver()
+        manager = FakeManager()
+        observer._on_new_manager(None, manager)
+        self.assertEqual(
+            [signal for signal, _callback in manager.connections],
+            ["on-new-ssrc", "new-jitterbuffer"],
+        )
+
+        jitterbuffer = FakeJitterBuffer({
+            "num-pushed": 100,
+            "num-lost": 2,
+            "num-late": 1,
+            "num-duplicates": 3,
+            "rtx-count": 4,
+            "rtx-success-count": 2,
+        })
+        observer._on_new_jitterbuffer(None, jitterbuffer, 0, 123)
+
+        self.assertTrue(jitterbuffer.properties["do-lost"])
+        self.assertTrue(jitterbuffer.properties["post-drop-messages"])
+        self.assertEqual(observer.transport_stats()["num_lost"], 2)
+        events = observer.poll()
+        self.assertEqual(events[0]["event"], "transport_counters")
+        self.assertEqual(events[0]["num_late"], 1)
+
     def test_zero_ntp_reference_falls_back_to_pts(self):
         policy = FrameTimestampPolicy()
         policy.reset(FakePipeline(Gst.SECOND))
@@ -137,7 +238,7 @@ class CameraPipelinePolicyTests(unittest.TestCase):
             FakeSample(FakeBuffer(Gst.SECOND, reference_timestamp=0))
         )
         self.assertTrue(result.valid)
-        self.assertEqual(result.source, "pts-only")
+        self.assertEqual(result.source, "host-anchored-pts")
         self.assertIsNone(result.camera_ntp_ns)
 
     def test_valid_pts_uses_pipeline_clock_when_ntp_meta_is_absent(self):
@@ -148,27 +249,31 @@ class CameraPipelinePolicyTests(unittest.TestCase):
             FakeSample(FakeBuffer(running_time - 100 * Gst.MSECOND))
         )
         self.assertTrue(result.valid)
-        self.assertEqual(result.source, "pts-only")
+        self.assertEqual(result.source, "host-anchored-pts")
         self.assertLess(abs(result.captured_at.timestamp() - (time.time() - 0.1)), 0.1)
 
-    def test_reference_timestamp_anchors_hybrid_clock(self):
+    def test_reference_timestamp_is_observational_only(self):
         running_time = Gst.SECOND
         host_time_ns = 100 * Gst.SECOND
+        reference_time_ns = 125 * Gst.SECOND
         policy = FrameTimestampPolicy()
         policy.reset(FakePipeline(running_time))
         with patch(
-            "sensors.camera.camera_pipeline_policy.time.time_ns",
+            "sensors.camera.camera_timebase.time.time_ns",
             return_value=host_time_ns,
         ):
             result = policy.timestamp_for_sample(
-                FakeSample(FakeBuffer(running_time, reference_timestamp=host_time_ns))
+                FakeSample(FakeBuffer(
+                    running_time,
+                    reference_timestamp=reference_time_ns,
+                ))
             )
         self.assertTrue(result.valid)
-        self.assertEqual(result.source, "pts-disciplined-by-ntp")
-        self.assertEqual(result.reference_clock_offset_seconds, 0.0)
-        self.assertEqual(result.camera_ntp_ns, host_time_ns)
-        self.assertEqual(result.timing["camera_ntp_status"], "anchor")
-        self.assertEqual(result.timing["filtered_ntp_correction_ns"], 0)
+        self.assertEqual(result.source, "host-anchored-pts")
+        self.assertEqual(result.media_time_ns, host_time_ns)
+        self.assertEqual(result.reference_clock_offset_seconds, 25.0)
+        self.assertEqual(result.camera_ntp_ns, reference_time_ns)
+        self.assertNotIn("filtered_ntp_correction_ns", result.timing)
 
     def test_large_stable_camera_clock_offset_is_not_rejected(self):
         policy = FrameTimestampPolicy(max_clock_offset_seconds=1.0)
@@ -176,23 +281,23 @@ class CameraPipelinePolicyTests(unittest.TestCase):
         host_time_ns = 100 * Gst.SECOND
         reference_time_ns = host_time_ns + 25 * Gst.SECOND
         with patch(
-            "sensors.camera.camera_pipeline_policy.time.time_ns",
+            "sensors.camera.camera_timebase.time.time_ns",
             return_value=host_time_ns,
         ):
             result = policy.timestamp_for_sample(
                 FakeSample(FakeBuffer(Gst.SECOND, reference_timestamp=reference_time_ns))
             )
         self.assertTrue(result.valid)
-        self.assertEqual(result.source, "pts-disciplined-by-ntp")
+        self.assertEqual(result.source, "host-anchored-pts")
         self.assertAlmostEqual(result.reference_clock_offset_seconds, 25.0)
-        self.assertIn("DVR RTCP/NTP clock offset", result.reference_warning)
+        self.assertIn("DVR reference clock offset", result.reference_warning)
 
     def test_pipeline_clock_mapping_uses_a_fixed_anchor(self):
         pipeline = FakePipeline(10 * Gst.SECOND)
         policy = FrameTimestampPolicy()
         policy.reset(pipeline)
         with patch(
-            "sensors.camera.camera_pipeline_policy.time.time_ns",
+            "sensors.camera.camera_timebase.time.time_ns",
             side_effect=(100 * Gst.SECOND, 500 * Gst.SECOND),
         ):
             first = policy.timestamp_for_sample(
@@ -207,17 +312,17 @@ class CameraPipelinePolicyTests(unittest.TestCase):
             1.0,
         )
 
-    def test_small_ntp_error_is_filtered_into_pts_prediction(self):
+    def test_ntp_progression_does_not_move_pts_time(self):
         pipeline = FakePipeline(Gst.SECOND)
         policy = FrameTimestampPolicy()
         policy.reset(pipeline)
         with (
             patch(
-                "sensors.camera.camera_pipeline_policy.time.time_ns",
+                "sensors.camera.camera_timebase.time.time_ns",
                 side_effect=(100 * Gst.SECOND, 101 * Gst.SECOND),
             ),
             patch(
-                "sensors.camera.camera_pipeline_policy.time.monotonic_ns",
+                "sensors.camera.camera_timebase.time.monotonic_ns",
                 side_effect=(10 * Gst.SECOND, 11 * Gst.SECOND),
             ),
         ):
@@ -228,77 +333,50 @@ class CameraPipelinePolicyTests(unittest.TestCase):
             pipeline.clock.value = 2 * Gst.SECOND
             result = policy.timestamp_for_sample(FakeSample(FakeBuffer(
                 2 * Gst.SECOND,
-                reference_timestamp=126 * Gst.SECOND + 5 * Gst.MSECOND,
+                reference_timestamp=126 * Gst.SECOND + 100 * Gst.MSECOND,
             )))
 
-        self.assertEqual(result.timing["camera_ntp_status"], "tracking")
-        self.assertEqual(result.timing["target_ntp_correction_ns"], 625_000)
-        self.assertEqual(result.timing["filtered_ntp_correction_ns"], 625_000)
-        self.assertEqual(result.timing["attempted_capture_time_ns"], 101_000_625_000)
+        self.assertEqual(result.media_time_ns, 101 * Gst.SECOND)
+        self.assertEqual(result.camera_ntp_ns, 126 * Gst.SECOND + 100 * Gst.MSECOND)
+        self.assertEqual(result.source, "host-anchored-pts")
 
-    def test_large_ntp_step_requires_confirmation_and_slews(self):
-        pipeline = FakePipeline(Gst.SECOND)
+    def test_unknown_reference_clock_is_preserved_without_conversion(self):
         policy = FrameTimestampPolicy()
-        policy.reset(pipeline)
-        with (
-            patch(
-                "sensors.camera.camera_pipeline_policy.time.time_ns",
-                side_effect=tuple(value * Gst.SECOND for value in (100, 101, 102, 103)),
-            ),
-            patch(
-                "sensors.camera.camera_pipeline_policy.time.monotonic_ns",
-                side_effect=tuple(value * Gst.SECOND for value in (10, 11, 12, 13)),
-            ),
-        ):
-            policy.timestamp_for_sample(FakeSample(FakeBuffer(
-                Gst.SECOND,
-                reference_timestamp=125 * Gst.SECOND,
-            )))
-            results = []
-            for second in (2, 3, 4):
-                pipeline.clock.value = second * Gst.SECOND
-                results.append(policy.timestamp_for_sample(FakeSample(FakeBuffer(
-                    second * Gst.SECOND,
-                    reference_timestamp=(124 + second) * Gst.SECOND + 100 * Gst.MSECOND,
-                ))))
-
-        self.assertEqual(results[0].timing["camera_ntp_status"], "step-candidate-1/3")
-        self.assertEqual(results[1].timing["camera_ntp_status"], "step-candidate-2/3")
-        self.assertEqual(results[2].timing["camera_ntp_status"], "step-confirmed-slewing")
-        self.assertEqual(results[2].timing["target_ntp_correction_ns"], 100 * Gst.MSECOND)
-        self.assertEqual(results[2].timing["filtered_ntp_correction_ns"], Gst.MSECOND)
-
-    def test_duplicate_ntp_is_marked_invalid_but_pts_prediction_continues(self):
-        pipeline = FakePipeline(Gst.SECOND)
-        policy = FrameTimestampPolicy()
-        policy.reset(pipeline)
-        with (
-            patch(
-                "sensors.camera.camera_pipeline_policy.time.time_ns",
-                side_effect=(100 * Gst.SECOND, 101 * Gst.SECOND),
-            ),
-            patch(
-                "sensors.camera.camera_pipeline_policy.time.monotonic_ns",
-                side_effect=(10 * Gst.SECOND, 11 * Gst.SECOND),
-            ),
-        ):
-            policy.timestamp_for_sample(FakeSample(FakeBuffer(
-                Gst.SECOND,
-                reference_timestamp=125 * Gst.SECOND,
-            )))
-            pipeline.clock.value = 2 * Gst.SECOND
-            result = policy.timestamp_for_sample(FakeSample(FakeBuffer(
-                2 * Gst.SECOND,
-                reference_timestamp=125 * Gst.SECOND,
-            )))
-
-        self.assertFalse(result.timing["camera_ntp_valid"])
+        policy.reset(FakePipeline(Gst.SECOND))
+        result = policy.timestamp_for_sample(FakeSample(FakeBuffer(
+            Gst.SECOND,
+            reference_timestamp=125 * Gst.SECOND,
+            reference_clock="timestamp/x-driver-clock",
+        )))
+        self.assertIsNone(result.camera_ntp_ns)
         self.assertEqual(
-            result.timing["camera_ntp_status"],
-            "invalid-backward-or-duplicate",
+            result.timing["reference_timestamp_raw_ns"],
+            125 * Gst.SECOND,
         )
-        self.assertEqual(result.timing["predicted_camera_ntp_ns"], 126 * Gst.SECOND)
-        self.assertEqual(result.timing["attempted_capture_time_ns"], 101 * Gst.SECOND)
+        self.assertIn("unknown_reference_clock", result.timing["flags"])
+
+    def test_normal_fifty_millisecond_pts_gap_is_not_a_loss_candidate(self):
+        pipeline = FakePipeline(Gst.SECOND)
+        policy = FrameTimestampPolicy()
+        policy.reset(pipeline)
+        policy.timestamp_for_sample(FakeSample(FakeBuffer(Gst.SECOND)))
+        pipeline.clock.value += 50 * Gst.MSECOND
+        result = policy.timestamp_for_sample(FakeSample(FakeBuffer(
+            Gst.SECOND + 50 * Gst.MSECOND,
+        )))
+        self.assertFalse(result.timing["large_pts_gap_candidate"])
+
+    def test_large_pts_gap_is_only_a_candidate(self):
+        pipeline = FakePipeline(Gst.SECOND)
+        policy = FrameTimestampPolicy()
+        policy.reset(pipeline)
+        policy.timestamp_for_sample(FakeSample(FakeBuffer(Gst.SECOND)))
+        pipeline.clock.value += 70 * Gst.MSECOND
+        result = policy.timestamp_for_sample(FakeSample(FakeBuffer(
+            Gst.SECOND + 70 * Gst.MSECOND,
+        )))
+        self.assertTrue(result.timing["large_pts_gap_candidate"])
+        self.assertIn("unusual_pts_gap", result.timing["flags"])
 
     def test_duplicate_pts_is_rejected_after_a_valid_frame(self):
         running_time = 10 * Gst.SECOND
@@ -346,7 +424,6 @@ class CameraPipelinePolicyTests(unittest.TestCase):
         frame = object()
         pipeline = object.__new__(GStreamerPipeline)
         pipeline.first_frame_received = True
-        pipeline._last_timestamp_diagnostic = time.monotonic()
         pipeline._sample_to_frame = lambda _sample: frame
         pipeline.timestamp_policy = type(
             "Policy",
@@ -367,7 +444,7 @@ class CameraPipelinePolicyTests(unittest.TestCase):
         )()
         observed_ntp = []
         pipeline._observe_camera_ntp = lambda *args: observed_ntp.append(args)
-        pipeline._report_pipeline_frame_gap = lambda _timing: None
+        pipeline._report_unusual_pts_gap = lambda _timing: None
         manual = []
         pipeline._emit_manual_snapshot = lambda *args: manual.append(args)
 
@@ -382,27 +459,19 @@ class CameraPipelinePolicyTests(unittest.TestCase):
                 "reference_clock_offset_seconds": None,
             },
         })])
-        self.assertEqual(observed_ntp, [(None, Gst.SECOND, None)])
+        self.assertEqual(observed_ntp, [(None, None)])
         self.assertEqual(manual, [(frame, captured_at)])
 
-    def test_ntp_jump_warning_compares_ntp_progress_with_pts_progress(self):
+    def test_ntp_observation_only_publishes_reference_clock(self):
         pipeline = object.__new__(GStreamerPipeline)
-        pipeline.channel = 4
-        pipeline._last_camera_ntp_ns = None
-        pipeline._last_camera_ntp_pts_ns = None
         pipeline._has_frame_ntp = False
-        pipeline._publish_camera_ntp = lambda *_args: None
+        published = []
+        pipeline._publish_camera_ntp = lambda *args: published.append(args)
 
-        with patch("builtins.print") as warning:
-            pipeline._observe_camera_ntp(Gst.SECOND, Gst.SECOND, 0.0)
-            pipeline._observe_camera_ntp(
-                Gst.SECOND + 200 * Gst.MSECOND,
-                Gst.SECOND + 33 * Gst.MSECOND,
-                0.0,
-            )
+        pipeline._observe_camera_ntp(Gst.SECOND, 0.25)
 
-        warning.assert_called_once()
-        self.assertIn("Camera channel 4 NTP jumped", warning.call_args.args[0])
+        self.assertTrue(pipeline._has_frame_ntp)
+        self.assertEqual(published, [(Gst.SECOND, 250.0)])
 
 
 if __name__ == "__main__":

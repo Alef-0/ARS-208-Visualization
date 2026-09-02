@@ -1,5 +1,4 @@
-from datetime import datetime, timedelta, timezone
-import json
+from datetime import datetime
 from pathlib import Path
 import queue
 import threading
@@ -9,12 +8,17 @@ from typing import Callable, Mapping
 import cv2 as cv
 import numpy as np
 
+from processing.recording.camera_telemetry import (
+    CAMERA_RECORDING_SUMMARY_NAME,
+    CAMERA_TIMESTAMPS_JOURNAL_NAME,
+    CAMERA_TIMING_EVENTS_NAME,
+    CAMERA_TIMING_SESSION_NAME,
+    CameraTelemetryWriter,
+)
+
 
 CAMERA_FRAME_RATE = 30
 DEFAULT_RECORDED_FRAMES_PER_30 = 30
-CAMERA_TIMESTAMPS_NAME = "camera_timestamps.json"
-CAMERA_TIMESTAMPS_JOURNAL_NAME = "camera_timestamps.jsonl"
-CAMERA_RECORDING_SUMMARY_NAME = "camera_recording_summary.json"
 _STOP = object()
 
 
@@ -34,9 +38,7 @@ class CameraSnapshotRecorder:
         self._queue: queue.Queue | None = None
         self._thread: threading.Thread | None = None
         self._frame_number = 0
-        self._calibration_metadata_paths: tuple[Path, ...] = ()
-        self._calibration_journal_paths: tuple[Path, ...] = ()
-        self._calibration_summary_paths: tuple[Path, ...] = ()
+        self._telemetry = CameraTelemetryWriter()
         self._latency_adjustment_ms = 0.0
         self._calibration = False
         self.recorded_frames_per_30 = DEFAULT_RECORDED_FRAMES_PER_30
@@ -44,10 +46,13 @@ class CameraSnapshotRecorder:
         self.frames_observed = 0
         self.frames_selected = 0
         self.frames_dropped = 0
-        self.pipeline_frames_missing = 0
+        self.unusual_pts_gap_candidates = 0
         self.frames_rejected_invalid_timing = 0
         self._recording_started_at = ""
+        self._recording_started_unix_ns = 0
         self._recording_started_monotonic_ns = 0
+        self._transport_stats: dict[str, int] = {}
+        self._transport_stats_by_epoch: dict[int, dict[str, int]] = {}
 
     def start(
         self,
@@ -55,6 +60,7 @@ class CameraSnapshotRecorder:
         *,
         calibration: bool = False,
         latency_adjustment_ms: float = 0.0,
+        timing_session: Mapping | None = None,
     ) -> None:
         if self.active:
             raise RuntimeError("Camera snapshot recording is already active")
@@ -72,38 +78,33 @@ class CameraSnapshotRecorder:
         self.frames_observed = 0
         self.frames_selected = 0
         self.frames_dropped = 0
-        self.pipeline_frames_missing = 0
+        self.unusual_pts_gap_candidates = 0
         self.frames_rejected_invalid_timing = 0
+        self._transport_stats = {}
+        self._transport_stats_by_epoch = {}
         self.error = None
         self._latency_adjustment_ms = float(latency_adjustment_ms)
         self._calibration = calibration
-        self._calibration_metadata_paths = (
-            tuple(folder / CAMERA_TIMESTAMPS_NAME for folder in selected.values())
-            if calibration
-            else ()
-        )
-        self._calibration_journal_paths = (
-            tuple(
-                folder / CAMERA_TIMESTAMPS_JOURNAL_NAME
-                for folder in selected.values()
-            )
-            if calibration
-            else ()
-        )
-        self._calibration_summary_paths = (
-            tuple(
-                folder / CAMERA_RECORDING_SUMMARY_NAME
-                for folder in selected.values()
-            )
-            if calibration
-            else ()
-        )
-        self._recording_started_at = datetime.now().astimezone().isoformat(
+        started = datetime.now().astimezone()
+        self._recording_started_at = started.isoformat(
             timespec="microseconds"
         )
+        self._recording_started_unix_ns = time.time_ns()
         self._recording_started_monotonic_ns = time.monotonic_ns()
-        self._initialize_calibration_journal()
-        self._write_calibration_metadata()
+        if calibration:
+            self._telemetry.start(
+                tuple(selected.values()),
+                {
+                    "recording_started_at": self._recording_started_at,
+                    "recording_started_unix_ns": self._recording_started_unix_ns,
+                    "recording_started_monotonic_ns": self._recording_started_monotonic_ns,
+                    "recorded_frames_per_30": self.recorded_frames_per_30,
+                    "image_adjustment_ns": round(
+                        self._latency_adjustment_ms * 1_000_000
+                    ),
+                    **dict(timing_session or {}),
+                },
+            )
         self._write_calibration_summary()
         self.active = True
         self._thread = threading.Thread(
@@ -123,8 +124,8 @@ class CameraSnapshotRecorder:
             return False
         self.frames_observed += 1
         timing = dict(timing or {})
-        self.pipeline_frames_missing += int(
-            timing.get("estimated_missing_frames", 0)
+        self.unusual_pts_gap_candidates += int(
+            bool(timing.get("large_pts_gap_candidate"))
         )
         self._sampling_accumulator += self.recorded_frames_per_30
         if self._sampling_accumulator < CAMERA_FRAME_RATE:
@@ -160,6 +161,41 @@ class CameraSnapshotRecorder:
         if self.active:
             self.frames_rejected_invalid_timing += 1
 
+    def record_timing_events(self, events) -> None:
+        if not self.active or not self._calibration:
+            return
+        for event in events:
+            self._telemetry.append_event(event)
+
+    def update_transport_stats(
+        self,
+        stats: Mapping,
+        *,
+        stream_epoch: int = 0,
+    ) -> None:
+        current = {
+            str(key): int(value)
+            for key, value in stats.items()
+        }
+        previous = self._transport_stats_by_epoch.setdefault(
+            int(stream_epoch),
+            {},
+        )
+        for key, value in current.items():
+            previous[key] = max(previous.get(key, 0), value)
+        fields = {
+            key
+            for epoch_stats in self._transport_stats_by_epoch.values()
+            for key in epoch_stats
+        }
+        self._transport_stats = {
+            key: sum(
+                epoch_stats.get(key, 0)
+                for epoch_stats in self._transport_stats_by_epoch.values()
+            )
+            for key in fields
+        }
+
     def set_latency_adjustment_ms(self, value: float) -> None:
         self._latency_adjustment_ms = float(value)
 
@@ -185,8 +221,8 @@ class CameraSnapshotRecorder:
                 except queue.Full:
                     continue
             self._thread.join()
-        self._write_calibration_metadata()
         self._write_calibration_summary(final=True)
+        self._telemetry.stop()
         if self.error is not None:
             raise self.error
         return self._frame_number
@@ -234,144 +270,69 @@ class CameraSnapshotRecorder:
         timing: Mapping,
         saved_at_ns: int,
     ) -> None:
-        if not self._calibration_metadata_paths:
+        if not self._telemetry.active:
             return
         timing = dict(timing)
-        captured_datetime = datetime.fromisoformat(captured_at)
-        attempted_corrected_at = captured_datetime - timedelta(
-            milliseconds=self._latency_adjustment_ms,
-        )
-        camera_ntp_ns = timing.get("camera_ntp_ns")
-        pts_time_ns = timing.get("pts_time_ns")
-        host_received_ns = timing.get("host_realtime_received_ns")
-        attempted_corrected_ns = (
-            int(timing["attempted_capture_time_ns"])
-            - round(self._latency_adjustment_ms * 1_000_000)
-            if timing.get("attempted_capture_time_ns") is not None
-            else round(attempted_corrected_at.timestamp() * 1_000_000_000)
-        )
-        timing.update({
-            "latency_adjustment_ms": self._latency_adjustment_ms,
-            "attempted_corrected_time_ns": attempted_corrected_ns,
+        self._telemetry.update_epoch({
+            key: timing.get(key)
+            for key in (
+                "stream_epoch",
+                "pipeline_zero_unix_ns",
+                "pipeline_zero_monotonic_ns",
+                "pipeline_clock_type",
+            )
+            if timing.get(key) is not None
         })
+        media_time_ns = timing.get("media_time_ns")
+        if media_time_ns is None:
+            media_time_ns = round(
+                datetime.fromisoformat(captured_at).timestamp() * 1_000_000_000
+            )
+        adjustment_ns = round(self._latency_adjustment_ms * 1_000_000)
+        estimated_exposure_ns = int(media_time_ns) - adjustment_ns
         record = {
-            "camera_frame": filename,
+            "frame": filename,
+            "stream_epoch": timing.get("stream_epoch"),
             "pts_ns": timing.get("pts_ns"),
             "running_time_ns": timing.get("running_time_ns"),
-            "pts_time_at": self._iso(self._datetime_from_ns(pts_time_ns)),
-            "pts_time_unix_ns": pts_time_ns,
-            "camera_ntp_at": self._iso(self._datetime_from_ns(camera_ntp_ns)),
-            "camera_ntp_unix": (
-                camera_ntp_ns / 1_000_000_000
-                if camera_ntp_ns is not None
-                else None
-            ),
-            "camera_ntp_unix_ns": camera_ntp_ns,
-            "camera_ntp_status": timing.get("camera_ntp_status"),
-            "camera_ntp_valid": timing.get("camera_ntp_valid"),
-            "host_received_at": self._iso(
-                self._datetime_from_ns(host_received_ns)
-            ),
-            "host_received_unix_ns": host_received_ns,
-            "capture_time_at": self._iso(
-                self._datetime_from_ns(host_received_ns)
-            ),
-            "capture_time_unix_ns": host_received_ns,
-            "captured_at": captured_at,
-            "captured_at_unix": captured_datetime.timestamp(),
-            "captured_at_unix_ns": timing.get("attempted_capture_time_ns"),
-            "attempted_corrected_at": self._iso(
-                self._datetime_from_ns(attempted_corrected_ns)
-            ),
-            "attempted_corrected_unix": attempted_corrected_ns / 1_000_000_000,
-            "attempted_corrected_unix_ns": attempted_corrected_ns,
-            "adjusted_at": self._iso(
-                self._datetime_from_ns(attempted_corrected_ns)
-            ),
-            "adjusted_at_unix": attempted_corrected_ns / 1_000_000_000,
-            "latency_adjustment_ms": self._latency_adjustment_ms,
-            "saved_at": self._iso(self._datetime_from_ns(saved_at_ns)),
-            "saved_at_unix_ns": saved_at_ns,
-            "timing": timing,
+            "received_monotonic_ns": timing.get("host_monotonic_received_ns"),
+            "received_unix_ns": timing.get("host_realtime_received_ns"),
+            "reference_timestamp_raw_ns": timing.get("reference_timestamp_raw_ns"),
+            "reference_clock": timing.get("reference_clock"),
+            "reference_ntp_ns": timing.get("camera_ntp_ns"),
+            "media_unix_ns": int(media_time_ns),
+            "estimated_exposure_unix_ns": estimated_exposure_ns,
+            "saved_unix_ns": int(saved_at_ns),
+            "flags": list(timing.get("flags") or ()),
         }
-        self._append_calibration_journal(record)
-
-    @staticmethod
-    def _datetime_from_ns(value) -> datetime | None:
-        if value is None:
-            return None
-        seconds, nanoseconds = divmod(int(value), 1_000_000_000)
-        try:
-            return datetime.fromtimestamp(seconds, timezone.utc).replace(
-                microsecond=nanoseconds // 1_000,
-            )
-        except (OverflowError, OSError, ValueError):
-            return None
-
-    @staticmethod
-    def _iso(value: datetime | None) -> str | None:
-        return value.isoformat(timespec="microseconds") if value is not None else None
+        self._telemetry.append_frame(record)
 
     def _write_calibration_summary(self, *, final: bool = False) -> None:
-        if not self._calibration_summary_paths:
+        if not self._telemetry.active:
             return
         summary = {
+            "schema_version": 2,
             "started_at": self._recording_started_at,
+            "started_unix_ns": self._recording_started_unix_ns,
             "started_monotonic_ns": self._recording_started_monotonic_ns,
             "recorded_frames_per_30": self.recorded_frames_per_30,
             "frames_observed": self.frames_observed,
             "frames_selected": self.frames_selected,
             "frames_dropped_writer_queue": self.frames_dropped,
-            "estimated_frames_missing_from_pts": self.pipeline_frames_missing,
+            "unusual_pts_gap_candidates": self.unusual_pts_gap_candidates,
             "frames_rejected_invalid_timing": self.frames_rejected_invalid_timing,
-            "total_frames_lost": (
-                self.frames_dropped
-                + self.pipeline_frames_missing
-                + self.frames_rejected_invalid_timing
+            "confirmed_frames_not_saved": (
+                self.frames_dropped + self.frames_rejected_invalid_timing
             ),
             "frames_saved": self._frame_number,
+            **self._transport_stats,
+            "transport_stats_by_epoch": [
+                {"stream_epoch": epoch, **stats}
+                for epoch, stats in sorted(self._transport_stats_by_epoch.items())
+            ],
         }
         if final:
             summary["stopped_at"] = datetime.now().astimezone().isoformat(
                 timespec="microseconds"
             )
-        for path in self._calibration_summary_paths:
-            temporary_path = path.with_suffix(path.suffix + ".tmp")
-            temporary_path.write_text(
-                json.dumps(summary, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            temporary_path.replace(path)
-
-    def _initialize_calibration_journal(self) -> None:
-        for path in self._calibration_journal_paths:
-            path.write_text("", encoding="utf-8")
-
-    def _append_calibration_journal(self, record: Mapping) -> None:
-        serialized = json.dumps(record, separators=(",", ":")) + "\n"
-        for path in self._calibration_journal_paths:
-            with path.open("a", encoding="utf-8") as journal:
-                journal.write(serialized)
-
-    def _write_calibration_metadata(self) -> None:
-        for path, journal_path in zip(
-            self._calibration_metadata_paths,
-            self._calibration_journal_paths,
-        ):
-            temporary_path = path.with_suffix(path.suffix + ".tmp")
-            with (
-                journal_path.open("r", encoding="utf-8") as journal,
-                temporary_path.open("w", encoding="utf-8") as manifest,
-            ):
-                manifest.write("[\n")
-                first_record = True
-                for line in journal:
-                    serialized = line.strip()
-                    if not serialized:
-                        continue
-                    if not first_record:
-                        manifest.write(",\n")
-                    manifest.write(f"  {serialized}")
-                    first_record = False
-                manifest.write("\n]\n" if not first_record else "]\n")
-            temporary_path.replace(path)
+        self._telemetry.write_summary(summary)

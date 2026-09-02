@@ -185,8 +185,24 @@ clock in `CALIBRATION/calibration_screen_clock.py`.
 
 When camera 4 is open, starting the clock display schedules a calibration
 recording after three seconds. Closing the display stops that recording. In
-addition to JPEGs, the calibration folder contains detailed PTS, NTP, host
-receipt, corrected-time, loss, and recording-summary evidence.
+addition to JPEGs, the calibration folder contains a compact append-only frame
+journal, session clock anchors, sparse RTCP/transport events, and a recording
+summary. Camera frame time is host-anchored PTS; NTP is retained independently
+for comparison and does not modify that timestamp. The configured 109 ms
+camera-to-radar adjustment remains provisional until a session-specific
+calibration validates it.
+
+After recording, analyze the EAN-13 markers and timing series with:
+
+```bash
+python3 analyze_calibration_recording_offset.py /path/to/calibration-recording
+```
+
+The report compares screen monotonic time with host-anchored PTS, NTP
+progression, the DVR-to-host clock offset, receipt delay, and host clock
+movement. The displayed marker predicts the next 60 Hz flip; it is not a
+measurement of physical panel scanout, so the remaining display/optical delay
+must be treated as calibration uncertainty rather than an exact timestamp.
 
 ## CSV conversion
 

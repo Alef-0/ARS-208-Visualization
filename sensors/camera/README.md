@@ -9,8 +9,11 @@ calibration.
 
 - `camera_gstreamer.py` owns connection state, GStreamer lifecycle, display,
   recording commands, manual snapshots, retry behavior, and GUI status events.
-- `camera_pipeline_policy.py` selects a decoder, builds the pipeline string,
-  and maps GStreamer PTS plus optional camera NTP metadata to capture time.
+- `camera_pipeline.py` selects a decoder and builds the pipeline string.
+- `camera_timebase.py` validates PTS and maps it onto host Unix/monotonic time.
+- `camera_reference_clock.py` observes declared frame reference clocks, RTCP
+  sender reports, and RTP jitter-buffer counters.
+- `camera_pipeline_policy.py` is a compatibility facade for older imports.
 
 ## Channel behavior
 
@@ -76,23 +79,23 @@ mapped through its segment to pipeline running time. The first usable frame
 anchors pipeline running time to host realtime while a monotonic clock tracks
 host-clock movement.
 
-If a valid reference timestamp is attached to a frame, it is interpreted as a
-camera NTP/Unix time and used to discipline the PTS timeline:
+The resulting `captured_at` always comes from the fixed host anchor plus frame
+running time. A frame reference timestamp is converted only when its caps
+explicitly identify an NTP or Unix clock. It is retained as diagnostic evidence
+and never moves the PTS-derived image time. Unknown reference clocks remain raw
+and are flagged instead of being guessed.
 
-- a first NTP value establishes an NTP-to-running-time anchor;
-- small timing errors are low-pass filtered;
-- large steps must repeat for three observations;
-- accepted correction changes are limited to 1 ms per frame;
-- missing or invalid NTP continues from the PTS prediction;
-- an output that would move backward is clamped forward by one nanosecond.
+Each calibration row keeps the independent observations needed to recompute
+the relationship: PTS, segment running time, host Unix and monotonic receipt,
+declared reference-clock data, PTS-derived media time, and flags. Epoch anchors
+are stored once per pipeline restart in the session file rather than repeated
+in every row.
 
-The resulting `captured_at` is the attempted camera-frame time. The policy also
-retains raw evidence including PTS, running time, pipeline age, host realtime
-and monotonic receipt, NTP status, correction state, and estimated missing
-frames from PTS gaps.
-
-Invalid PTS frames are not recorded. PTS gaps larger than roughly one and a
-half nominal 30 FPS periods add to the estimated pipeline-loss count.
+Invalid PTS frames are not recorded. A PTS interval above 1.75 nominal frame
+periods is reported as an unusual-gap candidate, not as confirmed frame loss.
+This avoids misclassifying the observed alternating 20/40 ms cadence and its
+occasional approximately 50 ms interval. Confirmed transport evidence comes
+from jitter-buffer counters and messages.
 
 ## Latency values
 
@@ -114,14 +117,17 @@ The camera recorder can select any integer number of frames from each nominal
 set of 30. Selection uses an accumulator, so rates lower than 30 are spread
 through the incoming sequence.
 
-Three distinct loss sources are retained:
+Three distinct conditions are retained:
 
-- frames estimated missing before the capture callback from PTS cadence;
+- unusual PTS-gap candidates, which are diagnostic and not counted as loss;
 - frames rejected because timing was invalid;
 - selected frames dropped because the JPEG writer queue was full.
 
-Warnings are rate-limited for the GUI, while final counters are saved in the
-calibration summary. See `../../processing/recording/README.md` for the output contract.
+RTCP sender reports are written as sparse events. Jitter-buffer packet loss,
+late packets, duplicates, and retransmission counters are aggregated into the
+final calibration summary. These are RTP packet counters, not decoded-frame
+counts. Warnings are rate-limited for the GUI. See
+`../../processing/recording/README.md` for the output contract.
 
 ## Hardware verification boundary
 
