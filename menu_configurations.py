@@ -287,6 +287,14 @@ class Configurations(BaseConfigurations):
             [sg.HorizontalSeparator()],
             [
                 sg.Push(),
+                sg.Text("Visible barcodes"),
+                sg.Combo((1, 2, 3, 4), default_value=3, readonly=True,
+                         key="calibration_visible_frames", size=(3, 1)),
+                sg.Text("3 leaves the next quadrant blank; 4 fills all quadrants."),
+                sg.Push(),
+            ],
+            [
+                sg.Push(),
                 sg.Button(
                     "OPEN CALIBRATION CAMERA 4",
                     key="calibration_camera_toggle",
@@ -445,6 +453,7 @@ class Configurations(BaseConfigurations):
         self.window["calibration_clock_start"].update(
             disabled=self.calibration_clock
         )
+        self.window["calibration_visible_frames"].update(disabled=self.calibration_clock)
 
     def change_received_messages(self, message_ids):
         messages = ", ".join(f"0x{message_id:03X}" for message_id in message_ids) or "--"

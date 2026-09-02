@@ -20,7 +20,9 @@ plugins from affecting this project.
 | `test_graph_filter.py` | Dynamic, quality, ambiguity, invalid-state, and RCS filtering |
 | `test_point_cloud_recorder.py` | Cluster/object PCD schemas, writer behavior, and recording sessions |
 | `test_recording_changes.py` | Camera/radar pairing, metadata, frame-rate selection, calibration journals, and playback loading |
-| `test_calibration_clock.py` | Monotonic display formatting and EAN-13 payload generation |
+| `test_calibration_clock.py` | Persistent canvas/outline pixels, optimized EAN equivalence, deadline pacing, P pause/resume and display journals |
+| `test_calibration_marker_analysis.py` | Synthetic perspective registration, direct/inferred marker selection, pause exclusions and raster ambiguity rejection |
+| `test_calibration_workflow.py` | Fake-process display startup, recording destinations, delayed capture and cancellation |
 | `test_manual_snapshot.py` | Snapshot folder validation, indexes, metadata, and cleanup after failure |
 | `test_snapshot_playback.py` | Paired-entry filtering, stepping, rendering controls, and copy-current-pair behavior |
 | `test_camera_pipeline_policy.py` | Decoder choice, pipeline structure, host-anchored PTS, reference clocks, transport counters, and capture callbacks |

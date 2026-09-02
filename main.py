@@ -10,7 +10,8 @@ from queue import Empty
 import FreeSimpleGUI as sg
 
 import application_core as base
-from CALIBRATION.calibration_screen_clock import run_calibration_clock
+from CALIBRATION.calibration_screen_clock import DEFAULT_VISIBLE_FRAMES, run_calibration_clock
+from CALIBRATION.display_timing import DISPLAY_JOURNAL_NAME
 from sensors.camera.camera_gstreamer import gstreamer_main
 from sensors.radar.connection_main import create_connection_communication
 from sensors.gps.gps_connection import main as gps_main
@@ -26,6 +27,7 @@ class RuntimeState:
     recording_stop_pending: bool = False
     calibration_recording_deadline: float | None = None
     calibration_recording_root: str | None = None
+    calibration_prepared_folder: str | None = None
     calibration_recording_folder: str | None = None
     pending_calibration_camera: dict | None = None
     calibration_clock_process: object | None = None
@@ -115,6 +117,7 @@ def _request_calibration_camera(
         runtime.pending_calibration_camera = None
         runtime.calibration_recording_deadline = None
         runtime.calibration_recording_root = None
+        runtime.calibration_prepared_folder = None
         if config.calibration_recording or runtime.calibration_recording_folder:
             send_cam.send(("record_stop", None))
         send_cam.send(("calibration_camera", {"active": False}))
@@ -178,6 +181,14 @@ def _start_calibration_clock(values, config, runtime):
     if process is not None and process.is_alive():
         return
 
+    try:
+        visible_frames = int(str(values.get("calibration_visible_frames", DEFAULT_VISIBLE_FRAMES)))
+        if not 1 <= visible_frames <= 4:
+            raise ValueError
+    except (TypeError, ValueError):
+        config.show_calibration_error("Visible barcodes must be a whole number between 1 and 4")
+        return
+
     recording_root = None
     if config.calibration_camera and config.connected_cam and not config.calibration_recording:
         recording_root = Path(values.get("record_folder", "")).expanduser()
@@ -187,13 +198,33 @@ def _start_calibration_clock(values, config, runtime):
             )
             return
 
+    # Prepare the destination before starting the display so its first marker
+    # has evidence too. JPEG capture still starts after the three-second delay.
+    journal_path = None
+    if recording_root is not None:
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            folder = recording_root.resolve() / f"calibration_camera_4_{timestamp}"
+            folder.mkdir(parents=False, exist_ok=False)
+        except OSError as error:
+            config.show_calibration_error(f"Could not create calibration recording: {error}")
+            return
+        runtime.calibration_prepared_folder = str(folder)
+        journal_path = str(folder / DISPLAY_JOURNAL_NAME)
+
     stop_event = runtime.process_context.Event()
     process = runtime.process_context.Process(
         target=run_calibration_clock,
         args=(stop_event,),
+        kwargs={"journal_path": journal_path, "visible_frames": visible_frames},
         name="calibration-clock",
     )
-    process.start()
+    try:
+        process.start()
+    except (OSError, RuntimeError) as error:
+        runtime.calibration_prepared_folder = None
+        config.show_calibration_error(f"Could not start barcode display: {error}")
+        return
     runtime.calibration_clock_process = process
     runtime.calibration_clock_stop_event = stop_event
     config.change_calibration_clock(True)
@@ -226,9 +257,14 @@ def _service_calibration(config, runtime, send_cam):
         runtime.calibration_clock_stop_event = None
         runtime.calibration_recording_deadline = None
         runtime.calibration_recording_root = None
+        runtime.calibration_prepared_folder = None
         if config.calibration_recording or runtime.calibration_recording_folder:
             send_cam.send(("record_stop", None))
         config.change_calibration_clock(False)
+        if process.exitcode:
+            config.show_calibration_error(
+                "The barcode display stopped with an error; check the terminal output."
+            )
 
     deadline = runtime.calibration_recording_deadline
     if deadline is None or time.monotonic() < deadline:
@@ -236,25 +272,23 @@ def _service_calibration(config, runtime, send_cam):
     runtime.calibration_recording_deadline = None
     if not (config.calibration_camera and config.connected_cam):
         runtime.calibration_recording_root = None
+        runtime.calibration_prepared_folder = None
         config.window["calibration_status"].update(
             "BARCODE ACTIVE — CAMERA 4 CLOSED BEFORE RECORDING"
         )
         return
 
-    root = Path(runtime.calibration_recording_root or "").expanduser()
     runtime.calibration_recording_root = None
-    try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        folder = root / f"calibration_camera_4_{timestamp}"
-        folder.mkdir(parents=False, exist_ok=False)
-    except OSError as error:
-        config.show_calibration_error(f"Could not create calibration recording: {error}")
+    prepared = runtime.calibration_prepared_folder
+    runtime.calibration_prepared_folder = None
+    if not prepared or not Path(prepared).is_dir():
+        config.show_calibration_error("The prepared calibration recording folder is missing")
         return
-
-    runtime.calibration_recording_folder = str(folder)
+    runtime.calibration_recording_folder = prepared
     send_cam.send((
         "record_start",
-        {"folders": {4: str(folder)}, "calibration": True},
+        {"folders": {4: prepared}, "calibration": True,
+         "display_journal": DISPLAY_JOURNAL_NAME},
     ))
 
 
@@ -469,6 +503,7 @@ def _apply_status_message(
         if not payload.get("active"):
             runtime.calibration_recording_deadline = None
             runtime.calibration_recording_root = None
+            runtime.calibration_prepared_folder = None
         return
     if message == "calibration_recording_state":
         state = dict(payload)

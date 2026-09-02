@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import queue
-import threading
 import time
 from dataclasses import dataclass
 
@@ -16,33 +14,30 @@ if __package__:
     from .ean13 import (
         MAX_PIXEL_VALUE,
         MIN_PIXEL_VALUE,
-        draw_ean13,
+        EAN13Painter,
         monotonic_ms_payload,
     )
+    from .display_timing import DisplayJournal, FramePacer
 else:
     from ean13 import (
         MAX_PIXEL_VALUE,
         MIN_PIXEL_VALUE,
-        draw_ean13,
+        EAN13Painter,
         monotonic_ms_payload,
     )
+    from display_timing import DisplayJournal, FramePacer
 
 
 WINDOW_NAME = "Calibration Clock"
 BACKGROUND_COLOR = (MIN_PIXEL_VALUE,) * 3
 FOREGROUND_COLOR = (MAX_PIXEL_VALUE,) * 3
 CORNER_COUNT = 4
-PERSISTED_FRAME_COUNT = 3
-BARCODE_PADDING = 8
+DEFAULT_VISIBLE_FRAMES = 3
+BARCODE_PADDING = 16
+OUTLINE_GAP = 8
+OUTLINE_WIDTH = 4
+OUTLINE_COLOR = (255, 255, 255)
 DISPLAY_REFRESH_HZ = 60
-DISPLAY_FRAME_NS = round(1_000_000_000 / DISPLAY_REFRESH_HZ)
-FRAME_WAIT_SECONDS = 0.05
-FRAME_BUFFER_COUNT = 2
-
-
-def predicted_display_time_ns(render_started_ns: int) -> int:
-    """Estimate when a rendered frame reaches the next 60 Hz display flip."""
-    return render_started_ns + DISPLAY_FRAME_NS
 
 
 def format_monotonic_timestamp(timestamp_ns: int) -> str:
@@ -53,23 +48,10 @@ def format_monotonic_timestamp(timestamp_ns: int) -> str:
 
 @dataclass(frozen=True, slots=True)
 class CornerLayout:
+    area: pygame.Rect
     barcode: pygame.Rect
+    outline: pygame.Rect
     clock_center: tuple[int, int]
-
-
-@dataclass(slots=True)
-class CornerState:
-    timestamp_ns: int | None = None
-    remaining_frames: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class CompletedFrame:
-    """A complete off-screen frame temporarily owned by the display thread."""
-
-    surface: pygame.Surface
-    corner: int
-    timestamp_ns: int
 
 
 def _corner_areas(width: int, height: int) -> tuple[pygame.Rect, ...]:
@@ -102,16 +84,22 @@ def _make_layout(area: pygame.Rect, corner: int, clock_height: int) -> CornerLay
         )
     barcode.height -= clock_height
     barcode.inflate_ip(-BARCODE_PADDING * 2, -BARCODE_PADDING * 2)
-    return CornerLayout(barcode=barcode, clock_center=clock_area.center)
+    outline = barcode.inflate(2 * (OUTLINE_GAP + OUTLINE_WIDTH),
+                              2 * (OUTLINE_GAP + OUTLINE_WIDTH))
+    return CornerLayout(area=area, barcode=barcode, outline=outline,
+                        clock_center=clock_area.center)
 
 
 class CalibrationRenderer:
-    """Render the rotating barcode sequence into caller-owned frame buffers."""
+    """Retain a configurable marker history and clear expired quadrants."""
 
-    def __init__(self, size: tuple[int, int]):
-        width, height = size
-        if width < 240 or height < 160:
-            raise ValueError("Canvas must be at least 240 by 160 pixels")
+    def __init__(self, target: pygame.Surface, visible_frames: int = DEFAULT_VISIBLE_FRAMES):
+        if type(visible_frames) is not int or not 1 <= visible_frames <= CORNER_COUNT:
+            raise ValueError("Visible frames must be a whole number between 1 and 4")
+        self.visible_frames = visible_frames
+        width, height = target.get_size()
+        if width < 320 or height < 160:
+            raise ValueError("Canvas must be at least 320 by 160 pixels")
 
         if not pygame.font.get_init():
             pygame.font.init()
@@ -119,47 +107,43 @@ class CalibrationRenderer:
         self._font = pygame.font.Font(None, font_size)
         clock_height = self._font.get_linesize() + 4
 
-        self.size = size
+        self.target = target
+        self.size = target.get_size()
         self._layouts = tuple(
             _make_layout(area, corner, clock_height)
             for corner, area in enumerate(_corner_areas(width, height))
         )
-        self._states = [CornerState() for _ in range(CORNER_COUNT)]
+        self._painters = tuple(EAN13Painter(layout.barcode) for layout in self._layouts)
+        self.timestamps = [None] * CORNER_COUNT
         self._next_corner = 0
-
-    def render_next(self, target: pygame.Surface, timestamp_ns: int) -> int:
-        """Draw the next complete sequence frame and return its updated corner."""
-        if target.get_size() != self.size:
-            raise ValueError("Target surface does not match the renderer size")
-
-        corner = self._next_corner
-        state = self._states[corner]
-        state.timestamp_ns = timestamp_ns
-        state.remaining_frames = PERSISTED_FRAME_COUNT
-
+        self._newest_corner = None
         target.fill(BACKGROUND_COLOR)
-        for layout, corner_state in zip(self._layouts, self._states):
-            if corner_state.remaining_frames == 0:
-                continue
-            self._draw_corner(target, layout, corner_state.timestamp_ns)
 
-        for corner_state in self._states:
-            corner_state.remaining_frames = max(0, corner_state.remaining_frames - 1)
+    def render_next(self, timestamp_ns: int) -> int:
+        """Change one quadrant and the previous outline without clearing history."""
+        corner = self._next_corner
+        if self._newest_corner is not None:
+            pygame.draw.rect(self.target, BACKGROUND_COLOR,
+                             self._layouts[self._newest_corner].outline, OUTLINE_WIDTH)
+        if self.visible_frames < CORNER_COUNT:
+            expired = (corner - self.visible_frames) % CORNER_COUNT
+            if self.timestamps[expired] is not None:
+                self.target.fill(BACKGROUND_COLOR, self._layouts[expired].area)
+                self.timestamps[expired] = None
+        layout = self._layouts[corner]
+        self.target.fill(BACKGROUND_COLOR, layout.area)
+        self._draw_corner(corner, timestamp_ns)
+        pygame.draw.rect(self.target, OUTLINE_COLOR, layout.outline, OUTLINE_WIDTH)
+        self.timestamps[corner] = timestamp_ns
+        self._newest_corner = corner
         self._next_corner = (corner + 1) % CORNER_COUNT
         return corner
 
-    def _draw_corner(
-        self,
-        target: pygame.Surface,
-        layout: CornerLayout,
-        timestamp_ns: int | None,
-    ) -> None:
-        if timestamp_ns is None:
-            return
-        draw_ean13(
-            target,
+    def _draw_corner(self, corner: int, timestamp_ns: int) -> None:
+        layout = self._layouts[corner]
+        self._painters[corner].draw(
+            self.target,
             monotonic_ms_payload(timestamp_ns),
-            layout.barcode,
             dark_color=BACKGROUND_COLOR,
             light_color=FOREGROUND_COLOR,
         )
@@ -169,105 +153,20 @@ class CalibrationRenderer:
             FOREGROUND_COLOR,
             BACKGROUND_COLOR,
         )
-        target.blit(clock, clock.get_rect(center=layout.clock_center))
+        self.target.blit(clock, clock.get_rect(center=layout.clock_center))
 
-
-class CalibrationFrameProducer:
-    """Prepare frames on a worker without modifying display-owned buffers."""
-
-    def __init__(self, size: tuple[int, int]):
-        self._size = size
-        self._available: queue.Queue[pygame.Surface] = queue.Queue(
-            maxsize=FRAME_BUFFER_COUNT
-        )
-        self._ready: queue.Queue[CompletedFrame] = queue.Queue(maxsize=1)
-        for _ in range(FRAME_BUFFER_COUNT):
-            surface = pygame.Surface(size, depth=32)
-            surface.fill(BACKGROUND_COLOR)
-            self._available.put_nowait(surface)
-
-        self._stop_event = threading.Event()
-        self._failure: Exception | None = None
-        self._thread = threading.Thread(
-            target=self._produce_frames,
-            name="calibration-frame-producer",
-        )
-        self._started = False
-
-    def start(self) -> None:
-        if self._started:
-            raise RuntimeError("Calibration frame producer is already started")
-        self._started = True
-        self._thread.start()
-
-    def next_frame(self, timeout: float = FRAME_WAIT_SECONDS) -> CompletedFrame | None:
-        """Give the display thread ownership of the next complete frame."""
-        if not self._started:
-            raise RuntimeError("Calibration frame producer is not started")
-        try:
-            return self._ready.get(timeout=timeout)
-        except queue.Empty:
-            self._raise_if_failed()
-            return None
-
-    def release(self, frame: CompletedFrame) -> None:
-        """Return a frame after display so its buffer may be rendered again."""
-        self._available.put_nowait(frame.surface)
-
-    def stop(self) -> None:
-        if not self._started:
-            return
-        self._stop_event.set()
-        self._thread.join(timeout=1.0)
-        if self._thread.is_alive():
-            raise RuntimeError("Calibration frame producer did not stop")
-
-    def _produce_frames(self) -> None:
-        try:
-            renderer = CalibrationRenderer(self._size)
-            while not self._stop_event.is_set():
-                surface = self._wait_for_available_surface()
-                if surface is None:
-                    return
-
-                timestamp_ns = predicted_display_time_ns(time.monotonic_ns())
-                corner = renderer.render_next(surface, timestamp_ns)
-                completed = CompletedFrame(surface, corner, timestamp_ns)
-                if not self._publish(completed):
-                    return
-        except Exception as error:
-            self._failure = error
-            self._stop_event.set()
-
-    def _wait_for_available_surface(self) -> pygame.Surface | None:
-        while not self._stop_event.is_set():
-            try:
-                return self._available.get(timeout=FRAME_WAIT_SECONDS)
-            except queue.Empty:
-                continue
-        return None
-
-    def _publish(self, frame: CompletedFrame) -> bool:
-        while not self._stop_event.is_set():
-            try:
-                self._ready.put(frame, timeout=FRAME_WAIT_SECONDS)
-                return True
-            except queue.Full:
-                continue
-        return False
-
-    def _raise_if_failed(self) -> None:
-        if self._failure is not None:
-            raise RuntimeError("Calibration frame producer failed") from self._failure
-
-
-def _exit_requested() -> bool:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            return True
-        if event.type == pygame.KEYDOWN and event.key in (pygame.K_q, pygame.K_ESCAPE):
-            return True
-    return False
+    def metadata(self) -> dict:
+        return {
+            "size": list(self.size), "outline_width": OUTLINE_WIDTH,
+            "visible_frames": self.visible_frames,
+            "timestamp_semantics": "monotonic time sampled before drawing, not physical scanout",
+            "corner_order": ["top-left", "top-right", "bottom-right", "bottom-left"],
+            "layouts": [
+                {"area": list(layout.area), "barcode": list(layout.barcode),
+                 "bars": list(painter.bars), "outline": list(layout.outline)}
+                for layout, painter in zip(self._layouts, self._painters)
+            ],
+        }
 
 
 def run_calibration_clock(
@@ -276,35 +175,99 @@ def run_calibration_clock(
     width: int = 1920,
     height: int = 1080,
     windowed: bool = False,
+    refresh_hz: float = DISPLAY_REFRESH_HZ,
+    journal_path: str | None = None,
+    visible_frames: int = DEFAULT_VISIBLE_FRAMES,
 ) -> None:
-    """Run display work here and frame creation on one dedicated worker thread."""
+    """Sample/draw/present on one thread, with no prefetched or queued frames."""
     if width <= 0 or height <= 0:
         raise ValueError("Canvas dimensions must be positive")
 
     pygame.display.init()
     pygame.font.init()
     try:
-        flags = pygame.DOUBLEBUF | pygame.SCALED | (0 if windowed else pygame.FULLSCREEN)
+        flags = pygame.SCALED | (0 if windowed else pygame.FULLSCREEN)
         try:
             screen = pygame.display.set_mode((width, height), flags, vsync=1)
         except pygame.error as error:
             raise RuntimeError("Pygame could not create the calibration display") from error
 
         pygame.display.set_caption(WINDOW_NAME)
-        producer = CalibrationFrameProducer(screen.get_size())
-        producer.start()
+        renderer = CalibrationRenderer(screen, visible_frames=visible_frames)
+        # In Pygame 2.6.1 SCALED mode, update(rect) calls flip internally anyway.
+        # Dirty drawing saves CPU work; one flip presents the complete state.
+        pygame.display.flip()
+        pacer = FramePacer(time.monotonic_ns(), refresh_hz)
+        clock = pygame.time.Clock()
+        journal = DisplayJournal(journal_path, {
+            **renderer.metadata(), "requested_refresh_hz": refresh_hz,
+            "pygame_version": pygame.version.ver,
+            "sdl_version": list(pygame.get_sdl_version()),
+            "display_driver": pygame.display.get_driver(), "vsync_requested": True,
+        })
+
+        paused = False
+        exit_requested = False
+        resumed_after_pause = False
+
+        def poll_controls():
+            nonlocal paused, exit_requested, resumed_after_pause, pacer
+            if stop_event is not None and stop_event.is_set():
+                exit_requested = True
+                return True
+            toggled = False
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT or (
+                    event.type == pygame.KEYDOWN and event.key in (pygame.K_q, pygame.K_ESCAPE)
+                ):
+                    exit_requested = True
+                    return True
+                if (event.type == pygame.KEYDOWN and event.key == pygame.K_p
+                        and not getattr(event, "repeat", False)):
+                    paused = not paused
+                    toggled = True
+                    journal.pause(paused, time.monotonic_ns())
+                    if not paused:
+                        # Start a fresh cadence; intentional idle time is not
+                        # missed refreshes, nor an interval to learn from.
+                        pacer = FramePacer(time.monotonic_ns(), refresh_hz)
+                        clock.tick(0)
+                        resumed_after_pause = True
+                    pygame.display.set_caption(WINDOW_NAME + (" — paused (P to resume)" if paused else ""))
+                    print("[CALIBRATION] " + (
+                        "Paused for inspection; P resumes. Camera recording is unchanged."
+                        if paused else "Resumed with a fresh display timing schedule."
+                    ), flush=True)
+            # Even a pause/resume pair in one event batch must abort the old wait.
+            return exit_requested or paused or toggled
+
         try:
-            while stop_event is None or not stop_event.is_set():
-                if _exit_requested():
-                    break
-                completed = producer.next_frame()
-                if completed is None:
+            while True:
+                if paused:
+                    poll_controls()
+                    if exit_requested:
+                        break
+                    if paused:
+                        clock.tick(30)  # Keep controls responsive without drawing or spinning.
                     continue
-                screen.blit(completed.surface, (0, 0))
+                ready, skipped = pacer.wait(poll_controls)
+                if not ready:
+                    if exit_requested:
+                        break
+                    continue
+                marker_ns = time.monotonic_ns()
+                corner = renderer.render_next(marker_ns)
+                submit_ns = time.monotonic_ns()
                 pygame.display.flip()
-                producer.release(completed)
+                returned_ns = time.monotonic_ns()
+                timing = pacer.observe(marker_ns, submit_ns, returned_ns, skipped)
+                clock.tick(0)  # Pygame bookkeeping only: no second frame limiter.
+                timing["pygame_frame_ms"] = clock.get_time()
+                timing["resumed_after_pause"] = resumed_after_pause
+                resumed_after_pause = False
+                journal.append(corner, timing)
         finally:
-            producer.stop()
+            journal.close()
     finally:
         pygame.quit()
 
@@ -316,11 +279,19 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1080)
     parser.add_argument("--windowed", action="store_true")
+    parser.add_argument("--refresh-hz", type=float, default=DISPLAY_REFRESH_HZ)
+    parser.add_argument("--journal", help="New JSONL timing journal path (never overwritten)")
+    parser.add_argument("--visible-frames", type=int, choices=range(1, 5),
+                        default=DEFAULT_VISIBLE_FRAMES,
+                        help="Visible barcode history length (default: 3, leaving the next quadrant blank)")
     arguments = parser.parse_args()
     run_calibration_clock(
         width=arguments.width,
         height=arguments.height,
         windowed=arguments.windowed,
+        refresh_hz=arguments.refresh_hz,
+        journal_path=arguments.journal,
+        visible_frames=arguments.visible_frames,
     )
 
 

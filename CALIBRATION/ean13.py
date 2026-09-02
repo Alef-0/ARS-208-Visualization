@@ -1,6 +1,7 @@
 """EAN-13 generation and Pygame rendering for calibration timestamps."""
 
 import pygame
+from functools import lru_cache
 
 
 EAN_PAYLOAD_DIGITS = 12
@@ -28,7 +29,7 @@ EAN_LEFT_PARITY = (
 
 def ean13_check_digit(payload: str) -> str:
     """Return the EAN-13 check digit for a 12-digit payload."""
-    if len(payload) != EAN_PAYLOAD_DIGITS or not payload.isdigit():
+    if len(payload) != EAN_PAYLOAD_DIGITS or not payload.isascii() or not payload.isdigit():
         raise ValueError("EAN-13 payload must contain exactly 12 digits")
     weighted_sum = sum(int(value) for value in payload[::2])
     weighted_sum += 3 * sum(int(value) for value in payload[1::2])
@@ -54,6 +55,75 @@ def ean13_bits(payload: str) -> str:
     return "101" + left + "01010" + right + "101"
 
 
+def _dark_runs(pattern: str) -> tuple[tuple[int, int], ...]:
+    """Cache contiguous bars, rather than drawing each dark module separately."""
+    runs = []
+    start = None
+    for index, bit in enumerate(pattern + "0"):
+        if bit == "1" and start is None:
+            start = index
+        elif bit == "0" and start is not None:
+            runs.append((start, index - start))
+            start = None
+    return tuple(runs)
+
+
+class EAN13Painter:
+    """Precomputed pixel rectangles for one fixed-size barcode panel."""
+
+    def __init__(self, area):
+        self.area = pygame.Rect(area)
+        if self.area.width <= 0 or self.area.height <= 0:
+            raise ValueError("Barcode area must be positive")
+        module_width = self.area.width // 113  # 11 quiet + 95 encoded + 7 quiet
+        if module_width < 1:
+            raise ValueError("Barcode area is too narrow for one-pixel modules")
+        bars_x = self.area.x + (self.area.width - 113 * module_width) // 2 + 11 * module_width
+        self.bars = pygame.Rect(bars_x, self.area.y, 95 * module_width, self.area.height)
+
+        def rectangles(pattern, offset):
+            return tuple(
+                pygame.Rect(bars_x + (offset + start) * module_width,
+                            self.area.y, length * module_width, self.area.height)
+                for start, length in _dark_runs(pattern)
+            )
+
+        self._guards = tuple(
+            rect for pattern, offset in (("101", 0), ("01010", 45), ("101", 92))
+            for rect in rectangles(pattern, offset)
+        )
+        self._left = tuple({
+            mode: tuple(rectangles(pattern, 3 + position * 7) for pattern in patterns)
+            for mode, patterns in (("L", EAN_L_PATTERNS), ("G", EAN_G_PATTERNS))
+        } for position in range(6))
+        self._right = tuple(
+            tuple(rectangles(pattern, 50 + position * 7) for pattern in EAN_R_PATTERNS)
+            for position in range(6)
+        )
+
+    def draw(self, surface, payload, dark_color=(50, 50, 50), light_color=(200, 200, 200)):
+        digits = payload + ean13_check_digit(payload)
+        parity = EAN_LEFT_PARITY[int(digits[0])]
+        surface.fill(light_color, self.area)
+        surface.lock()
+        try:
+            for rect in self._guards:
+                surface.fill(dark_color, rect)
+            for position, mode in enumerate(parity):
+                for rect in self._left[position][mode][int(digits[position + 1])]:
+                    surface.fill(dark_color, rect)
+            for position in range(6):
+                for rect in self._right[position][int(digits[position + 7])]:
+                    surface.fill(dark_color, rect)
+        finally:
+            surface.unlock()
+
+
+@lru_cache(maxsize=16)
+def _painter(area: tuple[int, int, int, int]) -> EAN13Painter:
+    return EAN13Painter(area)
+
+
 def draw_ean13(
     surface: pygame.Surface,
     payload: str,
@@ -63,23 +133,4 @@ def draw_ean13(
     light_color: tuple[int, int, int] = (MAX_PIXEL_VALUE,) * 3,
 ) -> None:
     """Draw an EAN-13 barcode directly into a Pygame surface."""
-    if not isinstance(area, pygame.Rect):
-        area = pygame.Rect(area)
-    if area.width <= 0 or area.height <= 0:
-        raise ValueError("Barcode area must be positive")
-    bits = ean13_bits(payload)
-    quiet_left_modules = 11
-    quiet_right_modules = 7
-    total_modules = quiet_left_modules + len(bits) + quiet_right_modules
-    module_width = area.width // total_modules
-    if module_width < 1:
-        raise ValueError("Barcode area is too narrow for one-pixel modules")
-    barcode_width = total_modules * module_width
-    offset_x = area.x + (area.width - barcode_width) // 2
-    surface.fill(light_color, area)
-    bars_x = offset_x + quiet_left_modules * module_width
-    bar_rect = pygame.Rect(bars_x, area.y, module_width, area.height)
-    for index, bit in enumerate(bits):
-        if bit == "1":
-            bar_rect.x = bars_x + index * module_width
-            pygame.draw.rect(surface, dark_color, bar_rect)
+    _painter(tuple(area)).draw(surface, payload, dark_color, light_color)

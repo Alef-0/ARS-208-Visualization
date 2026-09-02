@@ -124,6 +124,7 @@ A channel-4 calibration folder contains JPEGs plus:
 | `camera_timing_session.json` | Stable recording settings and per-restart clock anchors |
 | `camera_timing_events.jsonl` | Sparse RTCP, jitter-buffer, and timing warning events |
 | `camera_recording_summary.json` | Start/stop, saved/drop counts, and transport totals |
+| `display_timestamps.jsonl` | Display geometry and per-marker sample/submission/flip timing, including warm-up |
 
 The JSONL journal is the single canonical frame manifest. A compact row stores
 the image name, stream epoch, PTS, running time, host receipt clocks, raw and
@@ -143,6 +144,15 @@ invalid timing) from unusual PTS-gap candidates. `num_lost`, `num_late`,
 packet counters; per-pipeline values are retained in
 `transport_stats_by_epoch` so a restart does not overwrite earlier evidence.
 They must not be interpreted as decoded-frame counts.
+
+The display journal is written by the calibration display process, separately
+from camera telemetry. It starts when the fullscreen view opens, before the
+three-second camera-recording delay. The camera session names this journal;
+analysis refuses to silently fall back to legacy decoding if that required
+file is missing. Close the barcode display before analyzing, so its buffered
+tail and final summary are flushed. Interrupted recordings may have a partial
+last line; analysis ignores only an incomplete final JSON line, never an
+internal gap or reordered display frame.
 
 ## Compatibility rules
 

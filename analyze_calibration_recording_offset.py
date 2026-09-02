@@ -13,6 +13,8 @@ from typing import Any, Iterable
 
 import cv2 as cv
 
+from CALIBRATION.marker_analysis import DisplayEvidence, MarkerAnalyzer
+
 
 EAN_PAYLOAD_DIGITS = 12
 EAN_MODULUS_MS = 10**EAN_PAYLOAD_DIGITS
@@ -260,7 +262,7 @@ def summarize(values: Iterable[float | None]) -> dict[str, float | int] | None:
     }
 
 
-def analyze_recording(recording_dir: Path) -> dict[str, Any]:
+def analyze_recording(recording_dir: Path, *, screen_corners=None) -> dict[str, Any]:
     epochs = load_epochs(recording_dir)
     rows = [
         normalize_timing_row(row, epochs)
@@ -281,27 +283,50 @@ def analyze_recording(recording_dir: Path) -> dict[str, Any]:
         (row for row in rows if row["reference_ntp_ns"] is not None),
         None,
     )
-    detector_type = getattr(cv, "barcode_BarcodeDetector", None)
-    if detector_type is None:
-        raise RuntimeError("This OpenCV installation has no BarcodeDetector")
-    detector = detector_type()
+    display_evidence = DisplayEvidence.load(recording_dir)
+    marker_analyzer = MarkerAnalyzer(display_evidence, screen_corners) if display_evidence else None
+    detector = None
+    if marker_analyzer is None:
+        if screen_corners is not None:
+            raise ValueError("--screen-corners requires a display_timestamps.jsonl journal")
+        detector_type = getattr(cv, "barcode_BarcodeDetector", None)
+        if detector_type is None:
+            raise RuntimeError("This OpenCV installation has no BarcodeDetector for legacy recordings")
+        detector = detector_type()
 
     frame_results = []
     decode_failures = []
+    excluded_frames = []
     for row in rows:
         image_path = recording_dir / row["camera_frame"]
         if not image_path.is_file():
             raise FileNotFoundError(f"Missing image named by journal: {image_path}")
         frame_monotonic_ns = int(row["frame_monotonic_ns"])
-        visible_values_ms, visible_codes = decode_visible_times_ms(
-            image_path,
-            round(frame_monotonic_ns / 1_000_000),
-            detector,
-        )
-        if not visible_values_ms:
-            decode_failures.append(row["camera_frame"])
-            continue
-        screen_ns = max(visible_values_ms) * 1_000_000
+        selection = {"selection": "legacy_freshest", "added_period_ns": 0}
+        if marker_analyzer is not None:
+            image = cv.imread(str(image_path), cv.IMREAD_COLOR)
+            if image is None:
+                raise ValueError(f"OpenCV could not read image: {image_path}")
+            selection = marker_analyzer.analyze(image, round(frame_monotonic_ns / 1_000_000))
+            if selection["screen_ns"] is None:
+                decode_failures.append(row["camera_frame"])
+                excluded_frames.append({"camera_frame": row["camera_frame"], **selection})
+                continue
+            observed = [item for item in selection["observations"] if item.get("display_index") is not None]
+            observed.sort(key=lambda item: item["timestamp_ms"])
+            visible_values_ms = [item["timestamp_ms"] for item in observed]
+            visible_codes = [item["code"] for item in observed]
+            screen_ns = selection["screen_ns"]
+        else:
+            visible_values_ms, visible_codes = decode_visible_times_ms(
+                image_path, round(frame_monotonic_ns / 1_000_000), detector,
+            )
+            if not visible_values_ms:
+                decode_failures.append(row["camera_frame"])
+                excluded_frames.append({"camera_frame": row["camera_frame"],
+                                        "selection": "ambiguous", "reason": "legacy_decode_failed"})
+                continue
+            screen_ns = max(visible_values_ms) * 1_000_000
         screen_unix_ns = (
             screen_ns + int(row["unix_minus_monotonic_ns"])
             if row["unix_minus_monotonic_ns"] is not None
@@ -316,7 +341,16 @@ def analyze_recording(recording_dir: Path) -> dict[str, Any]:
             )
         frame_results.append({
             **row,
-            "screen_monotonic_ms": max(visible_values_ms),
+            "screen_selection": selection["selection"],
+            "screen_source_ean13": selection.get("source_ean13", visible_codes[-1]),
+            "screen_source_corner": selection.get("source_corner"),
+            "display_index": selection.get("display_index"),
+            "added_period_ns": selection["added_period_ns"],
+            "barcode_observations": selection.get("observations", []),
+            "outlined_corners": selection.get("outlined_corners", []),
+            "expected_empty_corners": selection.get("expected_empty_corners", []),
+            "next_display_corner": selection.get("next_corner"),
+            "screen_monotonic_ms": screen_ns / 1_000_000,
             "screen_unix_ns": screen_unix_ns,
             "freshest_ean13": visible_codes[-1],
             "visible_code_count": len(visible_codes),
@@ -352,10 +386,7 @@ def analyze_recording(recording_dir: Path) -> dict[str, Any]:
                 else None
             ),
         })
-    if not frame_results:
-        raise RuntimeError("No valid EAN-13 screen values were decoded")
-
-    first = frame_results[0]
+    first = frame_results[0] if frame_results else None
     for result in frame_results:
         screen_delta_ns = (
             result["screen_monotonic_ms"] - first["screen_monotonic_ms"]
@@ -398,27 +429,49 @@ def analyze_recording(recording_dir: Path) -> dict[str, Any]:
             "system_clock_formula": (
                 "received Unix - (received monotonic + epoch Unix/monotonic offset)"
             ),
+            "screen_selection": (
+                "white outlined marker, or immediate predecessor plus measured display period; "
+                "unstable/ambiguous observations excluded"
+                if display_evidence else "legacy maximum decoded timestamp (no outline evidence)"
+            ),
+            "screen_timestamp_semantics": (
+                display_evidence.metadata.get("timestamp_semantics") if display_evidence else
+                "legacy marker; consult recording's display implementation"
+            ),
+            "measured_display_period_ns": display_evidence.period_ns if display_evidence else None,
+            "uncertainty": "marker quantization, submission-to-light delay, panel scanout and camera exposure remain",
         },
         "counts": {
             "journal_frames": len(rows),
             "decoded_frames": len(frame_results),
             "decode_failures": len(decode_failures),
+            "direct_frames": sum(row["screen_selection"] == "direct" for row in frame_results),
+            "inferred_one_period_frames": sum(row["screen_selection"] == "inferred_one_period" for row in frame_results),
         },
         "decode_failure_frames": decode_failures,
+        "excluded_frames": excluded_frames,
         "metrics": {
             field: summarize(result.get(field) for result in frame_results)
             for field in metric_fields
         },
         "frames": frame_results,
+        "metrics_by_selection": {
+            selection: {field: summarize(row.get(field) for row in frame_results
+                                        if row["screen_selection"] == selection)
+                        for field in metric_fields}
+            for selection in sorted({row["screen_selection"] for row in frame_results})
+        },
     }
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    fieldnames = tuple(rows[0])
+    fieldnames = tuple(rows[0]) if rows else ("camera_frame", "screen_selection")
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows({key: json.dumps(value, separators=(",", ":"))
+                          if isinstance(value, (list, dict)) else value
+                          for key, value in row.items()} for row in rows)
 
 
 def main() -> None:
@@ -427,6 +480,8 @@ def main() -> None:
     )
     parser.add_argument("recording_dir", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path.cwd())
+    parser.add_argument("--screen-corners", type=float, nargs=8, metavar="PIXEL",
+                        help="Optional monitor TL TR BR BL pixel x/y coordinates in camera images")
     arguments = parser.parse_args()
     recording_dir = arguments.recording_dir.expanduser().resolve()
     output_dir = arguments.output_dir.expanduser().resolve()
@@ -434,7 +489,7 @@ def main() -> None:
         raise SystemExit(f"Recording folder does not exist: {recording_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
-        report = analyze_recording(recording_dir)
+        report = analyze_recording(recording_dir, screen_corners=arguments.screen_corners)
     except (FileNotFoundError, ValueError, RuntimeError) as error:
         raise SystemExit(f"Analysis failed: {error}") from error
     json_path = output_dir / DEFAULT_JSON_NAME
@@ -450,6 +505,9 @@ def main() -> None:
     )
     print(f"JSON: {json_path}")
     print(f"CSV:  {csv_path}")
+    if report["excluded_frames"]:
+        print("Excluded-frame reasons and decoded evidence are in the JSON report. "
+              "If screen registration fails, supply --screen-corners TLx TLy TRx TRy BRx BRy BLx BLy.")
 
 
 if __name__ == "__main__":

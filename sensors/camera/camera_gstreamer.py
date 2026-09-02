@@ -140,6 +140,7 @@ class GStreamerPipeline:
                     "decoder_backend": self.current_decoder_backend.name,
                     "pipeline_latency_ms": self.pipeline_latency_ms,
                     "stream_epoch_at_start": self.stream_epoch,
+                    "display_journal": value.get("display_journal"),
                 },
             )
             self.calibration_recording = calibration

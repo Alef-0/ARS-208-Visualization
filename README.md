@@ -181,13 +181,28 @@ pair into another snapshot folder.
 ## Calibration
 
 The existing calibration workflow uses camera channel 4 and the fullscreen
-clock in `CALIBRATION/calibration_screen_clock.py`.
+clock in `CALIBRATION/calibration_screen_clock.py`. One persistent fullscreen
+canvas retains a configurable 1-4 clockwise-updated EAN-13 timestamps. The
+default is 3: the quadrant immediately ahead remains blank to expose partial
+updates/camera artifacts. Expired quadrants are cleared, and a pure-white
+rectangular outline identifies the newest marker. Choose the count in the
+Calibration tab's **Visible barcodes** control before starting. The display
+runs on one thread, samples monotonic time immediately
+before drawing near the next deadline, and presents once with `flip()`.
+Press **P** with the calibration window focused to freeze the display for a
+screenshot; press it again to resume with a fresh timing schedule. Camera
+recording continues. Held markers and the first resumed marker are excluded
+from automatic timing measurements; Q/Escape still closes the display.
 
 When camera 4 is open, starting the clock display schedules a calibration
-recording after three seconds. Closing the display stops that recording. In
+recording after three seconds. Its destination is created immediately so the
+display timing journal includes the warm-up. Closing the display stops camera
+recording but leaves camera 4 open. In
 addition to JPEGs, the calibration folder contains a compact append-only frame
 journal, session clock anchors, sparse RTCP/transport events, and a recording
-summary. Camera frame time is host-anchored PTS; NTP is retained independently
+summary. `display_timestamps.jsonl` additionally stores screen geometry,
+encoded times, deadlines, pre-flip submission times, flip-return observations,
+and irregular/missed-period candidates. Camera frame time is host-anchored PTS; NTP is retained independently
 for comparison and does not modify that timestamp. The configured 109 ms
 camera-to-radar adjustment remains provisional until a session-specific
 calibration validates it.
@@ -198,11 +213,22 @@ After recording, analyze the EAN-13 markers and timing series with:
 python3 analyze_calibration_recording_offset.py /path/to/calibration-recording
 ```
 
+The analyzer registers the white outline to the display geometry and verifies
+EAN guards, parity and checksum on multiple scanlines. It uses the outlined
+marker directly, or the immediate predecessor plus one measured display
+period when the newest code cannot be read. It rejects ambiguous outlines,
+conflicting scanlines, unexpected content in the blank quadrant, and unstable display timing. Direct and inferred results
+are reported separately, with excluded observations retained in the JSON.
+Historical recordings without a display journal retain the legacy decoder.
+
 The report compares screen monotonic time with host-anchored PTS, NTP
 progression, the DVR-to-host clock offset, receipt delay, and host clock
-movement. The displayed marker predicts the next 60 Hz flip; it is not a
-measurement of physical panel scanout, so the remaining display/optical delay
-must be treated as calibration uncertainty rather than an exact timestamp.
+movement. The marker now represents the time sampled before drawing, not
+`render time + 16.667 ms`. Neither it nor flip-return time measures physical
+panel scanout: submission-to-light delay, millisecond payload quantization,
+screen raster and camera exposure remain calibration uncertainty. Pygame vsync
+is a request, not a hardware guarantee. See `CALIBRATION/README.md` for timing
+details, standalone usage and manual screen-plane registration.
 
 ## CSV conversion
 
