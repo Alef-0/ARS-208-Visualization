@@ -10,13 +10,13 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 import main
-from CALIBRATION.ean13 import ean13_check_digit
-from CALIBRATION.marker_analysis import DisplayEvidence
-from processing.visualization.calibration_data import (
+from calibration.display.ean13 import ean13_check_digit
+from calibration.decoding.markers import DisplayEvidence
+from calibration.inspection.data import (
     CalibrationRecording, Undistorter, choose_prediction, describe_observation, summarize_predictions,
 )
-from processing.visualization.calibration_viewer import seconds_ns
-from processing.visualization.calibration_worker import InspectionWorker
+from calibration.inspection.viewer import seconds_ns
+from calibration.inspection.worker import InspectionWorker
 
 
 def display():
@@ -79,7 +79,7 @@ class PredictionTests(unittest.TestCase):
 
     def test_outline_supported_selection_tracks_source_region(self):
         e = display()
-        obs, timing = observation(e, method="Outline scanlines")
+        obs, timing = observation(e, method="OpenCV")
         strict = [{"selection": "direct", "screen_ns": obs["payload_ms"]*1_000_000, "display_index": 6,
                    "source_ean13": obs["code"], "variant": "Original"}]
         result = choose_prediction([obs], strict, timing, e)
@@ -100,7 +100,7 @@ class PredictionTests(unittest.TestCase):
     def test_duplicate_decoder_support_does_not_count_as_four_markers(self):
         e = display()
         a, timing = observation(e)
-        b, _ = observation(e, timing=timing, method="ZBar", variant="Undistorted")
+        b, _ = observation(e, timing=timing, method="OpenCV", variant="Undistorted")
         result = choose_prediction([a, b], [], timing, e)
         self.assertEqual(result["offset_ms"], 100)
         self.assertEqual(result["source_ids"], [a["id"], b["id"]])
@@ -187,7 +187,7 @@ class WorkerAndLauncherTests(unittest.TestCase):
                 main._start_calibration_visualization({"visualization_folder": folder,
                     "visualization_intrinsics": str(intrinsic), "visualization_undistorted": True}, config, runtime)
             command = launch.call_args.args[0]
-            self.assertIn("processing.visualization.calibration_viewer", command)
+            self.assertIn("calibration.inspection.viewer", command)
             self.assertIn(str(path.resolve()), command)
             self.assertEqual(command[-3:], ["--intrinsics", str(intrinsic), "--undistorted"])
             config.window["visualization_open"].update.assert_called_once_with(disabled=True)

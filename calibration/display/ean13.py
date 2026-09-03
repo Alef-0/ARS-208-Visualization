@@ -1,13 +1,12 @@
 """EAN-13 generation and Pygame rendering for calibration timestamps."""
 
 import pygame
-from functools import lru_cache
 
 
 EAN_PAYLOAD_DIGITS = 12
 EAN_MODULUS_MS = 10**EAN_PAYLOAD_DIGITS
-MIN_PIXEL_VALUE = 50
-MAX_PIXEL_VALUE = 200
+MIN_PIXEL_VALUE = 0
+MAX_PIXEL_VALUE = 250
 
 EAN_L_PATTERNS = (
     "0001101", "0011001", "0010011", "0111101", "0100011",
@@ -117,20 +116,3 @@ class EAN13Painter:
                     surface.fill(dark_color, rect)
         finally:
             surface.unlock()
-
-
-@lru_cache(maxsize=16)
-def _painter(area: tuple[int, int, int, int]) -> EAN13Painter:
-    return EAN13Painter(area)
-
-
-def draw_ean13(
-    surface: pygame.Surface,
-    payload: str,
-    area: pygame.Rect,
-    *,
-    dark_color: tuple[int, int, int] = (MIN_PIXEL_VALUE,) * 3,
-    light_color: tuple[int, int, int] = (MAX_PIXEL_VALUE,) * 3,
-) -> None:
-    """Draw an EAN-13 barcode directly into a Pygame surface."""
-    _painter(tuple(area)).draw(surface, payload, dark_color, light_color)

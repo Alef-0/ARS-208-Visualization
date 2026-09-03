@@ -1,4 +1,4 @@
-"""Standalone calibration viewer: python3 -m processing.visualization.calibration_viewer."""
+"""Standalone calibration viewer: python3 -m calibration.inspection.viewer."""
 
 import argparse
 from datetime import datetime
@@ -11,8 +11,9 @@ import cv2 as cv
 import numpy as np
 from PIL import Image, ImageTk
 
-from CALIBRATION.paths import PROJECT_ROOT as ROOT, suggested_intrinsics
-from .calibration_worker import InspectionWorker
+from calibration.paths import PROJECT_ROOT as ROOT, suggested_intrinsics
+from .worker import InspectionWorker
+from calibration.decoding.regions import ManualRegions
 
 COLORS = ("#47d9ff", "#ffc857", "#b8ee69", "#ed9cff")
 
@@ -48,15 +49,19 @@ class CalibrationViewer:
         self.current = None
         self.scanning = False
         self.scan_request = 0
+        self.scan_after_load = False
+        self.picker = None
         self.photo = None
         self.resize_job = None
         self.folder = tk.StringVar(value=str(folder or ROOT/"recordings"))
         self.intrinsics = tk.StringVar(value=str(intrinsics or suggested_intrinsics(folder)))
         self.variant = tk.StringVar(value="Undistorted" if undistorted else "Original")
         self.compare = tk.BooleanVar(value=undistorted)
+        self.alpha = tk.StringVar(value="0")
+        self.contrast = tk.BooleanVar(value=True)
+        self.binary = tk.BooleanVar(value=False)
         self.boxes = tk.BooleanVar(value=True)
         self.all_boxes = tk.BooleanVar(value=False)
-        self.method = tk.StringVar(value="All methods")
         self.position = tk.StringVar(value="1")
         self.status = tk.StringVar(value="Choose a calibration recording folder.")
         self.frame_title = tk.StringVar(value="No recording loaded")
@@ -110,12 +115,20 @@ class CalibrationViewer:
                         command=self.comparison_changed).pack(side="left", padx=8)
         row = ttk.Frame(outer)
         row.pack(fill="x", pady=(0, 4))
+        ttk.Label(row, text="Undistortion alpha").pack(side="left")
+        alpha = ttk.Combobox(row, textvariable=self.alpha, values=("0", "0.25", "0.5", "0.75", "1"),
+                             state="readonly", width=5)
+        alpha.pack(side="left", padx=4)
+        alpha.bind("<<ComboboxSelected>>", lambda _: self.load(preserve=True))
+        ttk.Checkbutton(row, text="Local contrast", variable=self.contrast,
+                        command=lambda: self.load(preserve=True)).pack(side="left", padx=4)
+        ttk.Checkbutton(row, text="Binary retry", variable=self.binary,
+                        command=lambda: self.load(preserve=True)).pack(side="left", padx=4)
+        ttk.Button(row, text="Mark 4 panels…", command=self.mark_panels).pack(side="left", padx=6)
+        row = ttk.Frame(outer)
+        row.pack(fill="x", pady=(0, 4))
         ttk.Checkbutton(row, text="Mark source region", variable=self.boxes, command=self.draw).pack(side="left")
         ttk.Checkbutton(row, text="Show all codes", variable=self.all_boxes, command=self.draw).pack(side="left", padx=8)
-        combo = ttk.Combobox(row, textvariable=self.method, state="readonly", width=18,
-                             values=("All methods", "OpenCV", "ZBar", "Outline scanlines"))
-        combo.pack(side="left")
-        combo.bind("<<ComboboxSelected>>", lambda _: self.populate())
         ttk.Label(outer, textvariable=self.frame_title, font=("TkDefaultFont", 11, "bold")).pack(anchor="w")
         prediction_label = ttk.Label(outer, textvariable=self.prediction, wraplength=1200)
         prediction_label.pack(anchor="w", pady=3)
@@ -176,6 +189,17 @@ class CalibrationViewer:
                 self.load(preserve=True)
 
     def load(self, preserve=False):
+        if not preserve:
+            try:
+                regions = ManualRegions.load(self.folder.get().strip(), self.intrinsics.get().strip() or None)
+                if regions:
+                    self.alpha.set(f"{regions.alpha:g}")
+                    self.intrinsics.set(str(regions.intrinsics_path))
+                    self.variant.set("Undistorted")
+                    self.compare.set(True)
+            except (ValueError, OSError) as error:
+                self.status.set(str(error))
+                return
         self.pending_index = self.index if preserve else 0
         self.session += 1
         self.count = 0
@@ -186,7 +210,8 @@ class CalibrationViewer:
         self.clear_frame()
         self.status.set("Loading recording journals…")
         self.worker.submit(self.session, "load", folder=self.folder.get().strip(),
-                           intrinsics=self.intrinsics.get().strip() or None)
+                           intrinsics=self.intrinsics.get().strip() or None,
+                           alpha=float(self.alpha.get()), contrast=self.contrast.get(), binary=self.binary.get())
 
     def keyboard_step(self, event, delta):
         if event.widget.winfo_class() not in ("Entry", "TEntry", "Text", "TCombobox"):
@@ -242,6 +267,9 @@ class CalibrationViewer:
     def scan(self):
         if not self.count:
             return
+        if not self.loaded.get("manual_regions"):
+            self.mark_panels(start_analysis=True)
+            return
         if self.compare.get() and not self.loaded["intrinsics"]:
             self.status.set("Apply camera intrinsics before decoding undistorted images.")
             return
@@ -250,6 +278,31 @@ class CalibrationViewer:
         self.scan_button.configure(state="disabled")
         self.folder_summary.set("Analyzing all frames… Navigation remains available.")
         self.worker.submit(self.session, "scan", compare=self.compare.get(), request=self.scan_request)
+
+    def mark_panels(self, start_analysis=False):
+        if self.picker is not None and self.picker.winfo_exists():
+            self.picker.lift()
+            return
+        intrinsics = self.intrinsics.get().strip()
+        if not intrinsics:
+            self.status.set("Choose camera intrinsics before marking undistorted panels.")
+            return
+        self.cancel_scan()
+        from .region_picker import RegionPicker
+
+        def saved(regions):
+            self.picker = None
+            self.alpha.set(f"{regions.alpha:g}")
+            self.variant.set("Undistorted")
+            self.compare.set(True)
+            self.scan_after_load = start_analysis
+            self.load(preserve=True)
+
+        try:
+            self.picker = RegionPicker(self.root, self.folder.get().strip(), intrinsics,
+                                       float(self.alpha.get()), saved)
+        except (ValueError, OSError) as error:
+            self.status.set(str(error))
 
     def cancel_scan(self):
         if self.scanning:
@@ -269,6 +322,9 @@ class CalibrationViewer:
                     self.index = min(self.pending_index, self.count-1)
                     self.slider.configure(to=self.count)
                     self.show_frame()
+                    if self.scan_after_load:
+                        self.scan_after_load = False
+                        self.scan()
                 elif kind == "frame" and payload["request"] == self.request:
                     self.current = payload
                     self.populate()
@@ -294,7 +350,7 @@ class CalibrationViewer:
             parts = []
             for epoch, data in report["by_epoch"].items():
                 metrics = []
-                for key, label in (("outline", "outline supported"), ("provisional", "provisional")):
+                for key, label in (("outline", "current indicator supported"), ("provisional", "provisional")):
                     metric = data[key]
                     if metric:
                         metrics.append(f"{label} {metric['median']:.2f} ms ({metric['count']} frames)")
@@ -302,7 +358,7 @@ class CalibrationViewer:
             text = "Separate stream estimates (no combined correction): " + "; ".join(parts)
         else:
             parts = []
-            for key, label in (("outline", "Outline supported"), ("provisional", "Provisional newest-code")):
+            for key, label in (("outline", "Current indicator supported"), ("provisional", "Provisional newest-code")):
                 metric = report[key]
                 if metric:
                     parts.append(f"{label}: median {metric['median']:.2f} ms; 90% range {metric['p05']:.2f}–{metric['p95']:.2f} ms; n={metric['count']}")
@@ -325,8 +381,6 @@ class CalibrationViewer:
         self.table.delete(*self.table.get_children())
         shown = []
         for observation in result["observations"]:
-            if self.method.get() not in ("All methods", observation["method"]):
-                continue
             best = observation["id"] in prediction["source_ids"]
             marker = observation["marker_ns"]
             stamp = seconds_ns(marker).removesuffix(" s") if marker is not None else (
@@ -367,6 +421,7 @@ class CalibrationViewer:
             display = observation["display_timing"]
             issues = "; ".join(display["issue_codes"]) if display else "No display entry"
             text = (f"Selected #{observation['id']}: {observation['method']} / {observation['variant']} | "
+                    f"{observation.get('preprocessing', 'grayscale')} / {observation.get('location_source', 'registered panel')}\n"
                     f"Display quadrant: {observation['quadrant']} | Display index: {observation['display_index']}\n"
                     f"EAN payload: {observation['payload_ms']} monotonic ms | Exact journal marker: {seconds_ns(observation['marker_ns'])}\n"
                     f"Source pixels ({observation['variant']} coordinates): {bounds}. Overlay mapped to {self.current['variant']}.\n"

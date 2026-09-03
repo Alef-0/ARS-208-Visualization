@@ -12,8 +12,8 @@ from queue import Empty
 import FreeSimpleGUI as sg
 
 import application_core as base
-from CALIBRATION.calibration_screen_clock import DEFAULT_VISIBLE_FRAMES, run_calibration_clock
-from CALIBRATION.display_timing import DISPLAY_JOURNAL_NAME
+from calibration.display.clock import DEFAULT_VISIBLE_FRAMES, run_calibration_clock
+from calibration.display.timing import DISPLAY_JOURNAL_NAME
 from sensors.camera.camera_gstreamer import gstreamer_main
 from sensors.radar.connection_main import create_connection_communication
 from sensors.gps.gps_connection import main as gps_main
@@ -366,7 +366,7 @@ def _start_calibration_visualization(values, config, runtime):
         sg.popup_error("Select a calibration folder containing camera_timestamps.jsonl or camera_timestamps.json",
                        title="Visualization")
         return
-    command = [sys.executable, "-m", "processing.visualization.calibration_viewer", str(folder.resolve())]
+    command = [sys.executable, "-m", "calibration.inspection.viewer", str(folder.resolve())]
     intrinsics_text = str(values.get("visualization_intrinsics", "")).strip()
     if intrinsics_text:
         intrinsics = Path(intrinsics_text).expanduser()

@@ -6,14 +6,15 @@ from unittest.mock import Mock, patch
 
 import pygame
 
-from CALIBRATION.calibration_screen_clock import (
+from calibration.display.clock import (
+    BACKGROUND_COLOR,
     CalibrationRenderer,
     format_monotonic_timestamp,
     run_calibration_clock,
 )
-from CALIBRATION.display_timing import DisplayJournal, FramePacer
-from CALIBRATION.marker_analysis import DisplayEvidence
-from CALIBRATION.ean13 import (
+from calibration.display.timing import DisplayJournal, FramePacer
+from calibration.decoding.markers import DisplayEvidence
+from calibration.display.ean13 import (
     EAN13Painter,
     ean13_bits,
     ean13_check_digit,
@@ -37,7 +38,7 @@ class CalibrationClockTests(unittest.TestCase):
         timestamp_ns = 12_345_678_000_000
         self.assertEqual(format_monotonic_timestamp(timestamp_ns), "12 345.678")
 
-    def test_four_persistent_corners_and_one_white_outline(self):
+    def test_four_persistent_corners_and_one_white_underline(self):
         screen = pygame.Surface((960, 540))
         renderer = CalibrationRenderer(screen, visible_frames=4)
         for index in range(4):
@@ -50,9 +51,9 @@ class CalibrationClockTests(unittest.TestCase):
         self.assertEqual(pygame.image.tobytes(unchanged, "RGB"),
                          pygame.image.tobytes(screen.subsurface(layouts[1]["area"]), "RGB"))
         for index, layout in enumerate(layouts):
-            x, y, _, _ = layout["outline"]
+            x, y, _, _ = layout["underline"]
             self.assertEqual(screen.get_at((x + 1, y + 1))[:3],
-                             (255, 255, 255) if index == 0 else (50, 50, 50))
+                             (255, 255, 255) if index == 0 else BACKGROUND_COLOR)
 
     def test_optimized_painter_matches_reference_bits_and_quiet_zones(self):
         screen = pygame.Surface((1000, 100))
@@ -79,7 +80,7 @@ class CalibrationClockTests(unittest.TestCase):
                     for slot, layout in enumerate(renderer.metadata()["layouts"]):
                         if slot not in occupied:
                             pixels = pygame.surfarray.array3d(screen.subsurface(layout["area"]))
-                            self.assertTrue((pixels == 50).all())
+                            self.assertTrue((pixels == BACKGROUND_COLOR[0]).all())
                     if count == 3 and index >= 2:
                         self.assertIsNone(renderer.timestamps[(corner + 1) % 4])
                 self.assertEqual(renderer.metadata()["visible_frames"], count)
@@ -147,8 +148,8 @@ class CalibrationClockTests(unittest.TestCase):
         pacer.observe.return_value = {"marker_ns": 123, "skipped_periods": 0,
                                       "irregular_interval": False, "late_submit": False}
         journal = Mock()
-        with patch("CALIBRATION.calibration_screen_clock.FramePacer", return_value=pacer), \
-                patch("CALIBRATION.calibration_screen_clock.DisplayJournal", return_value=journal), \
+        with patch("calibration.display.clock.FramePacer", return_value=pacer), \
+                patch("calibration.display.clock.DisplayJournal", return_value=journal), \
                 patch.object(pygame.display, "init"), \
                 patch.object(pygame.display, "set_mode", return_value=screen) as mode, \
                 patch.object(pygame.display, "set_caption"), \
@@ -218,8 +219,8 @@ class CalibrationClockTests(unittest.TestCase):
             }
             return pacer
 
-        with patch("CALIBRATION.calibration_screen_clock.FramePacer", side_effect=new_pacer) as factory, \
-                patch("CALIBRATION.calibration_screen_clock.DisplayJournal", return_value=journal), \
+        with patch("calibration.display.clock.FramePacer", side_effect=new_pacer) as factory, \
+                patch("calibration.display.clock.DisplayJournal", return_value=journal), \
                 patch.object(pygame.display, "init"), \
                 patch.object(pygame.display, "set_mode", return_value=screen), \
                 patch.object(pygame.display, "set_caption"), \
@@ -295,7 +296,7 @@ class CalibrationClockTests(unittest.TestCase):
 
     def test_wait_can_exit_without_opening_a_display(self):
         pacer = FramePacer(0)
-        with patch("CALIBRATION.display_timing.time.monotonic_ns", return_value=0):
+        with patch("calibration.display.timing.time.monotonic_ns", return_value=0):
             self.assertEqual(pacer.wait(lambda: True), (False, 0))
 
 

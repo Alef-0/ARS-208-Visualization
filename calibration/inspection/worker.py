@@ -6,7 +6,7 @@ import threading
 import cv2 as cv
 import numpy as np
 
-from .calibration_data import CalibrationRecording, summarize_predictions
+from .data import CalibrationRecording, summarize_predictions
 
 
 class InspectionWorker(threading.Thread):
@@ -46,10 +46,13 @@ class InspectionWorker(threading.Thread):
                         if self.model:
                             self.model.close()
                         self.model = None
-                        self.model = CalibrationRecording(options["folder"], options.get("intrinsics"))
+                        self.model = CalibrationRecording(options["folder"], options.get("intrinsics"),
+                                                          options.get("alpha", 0), options.get("contrast", True),
+                                                          options.get("binary", False))
                         self.results.put((session, "loaded", {
                             "count": len(self.model.rows), "folder": str(self.model.folder),
                             "intrinsics": bool(self.model.undistorter), "session": self.model.session,
+                            "manual_regions": bool(self.model.manual_regions),
                             "intrinsics_assumed_size": bool(self.model.undistorter and not self.model.undistorter.calibration_size),
                         }))
                     elif session == self.session and self.model:
@@ -57,6 +60,9 @@ class InspectionWorker(threading.Thread):
                             if self.latest_frame == (session, options["request"]):
                                 self.frame(options)
                         elif action == "scan":
+                            if not self.model.manual_regions:
+                                raise ValueError("Mark all four panels before analyzing the folder")
+                            self.model.reset_decoding()
                             self.scan = {"index": 0, "results": [], "compare": options["compare"],
                                          "errors": [], "request": options["request"]}
                         elif action == "cancel":

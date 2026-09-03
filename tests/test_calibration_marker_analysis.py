@@ -11,11 +11,12 @@ import cv2 as cv
 import numpy as np
 import pygame
 
-from CALIBRATION.calibration_screen_clock import CalibrationRenderer
-from CALIBRATION.display_timing import DISPLAY_FORMAT
-from CALIBRATION.marker_analysis import DisplayEvidence, MarkerAnalyzer, decode_bits, rectangle_points
-from CALIBRATION.ean13 import ean13_bits
-from analyze_calibration_recording_offset import analyze_recording, write_csv, main as analyze_main
+from calibration.display.clock import CalibrationRenderer
+from calibration.display.timing import DISPLAY_FORMAT
+from calibration.decoding.markers import DisplayEvidence, MarkerAnalyzer, rectangle_points
+from calibration.decoding.opencv import OpenCVReader
+from calibration.decoding.markers import scan_panel
+from calibration.analysis.recording import analyze_recording, write_csv, main as analyze_main
 
 
 def fixture(count=12, visible_frames=4):
@@ -40,10 +41,14 @@ def fixture(count=12, visible_frames=4):
 
 
 class MarkerAnalysisTests(unittest.TestCase):
-    def test_strict_guards_parity_and_checksum(self):
-        bits = ean13_bits("000123456789")
-        self.assertEqual(decode_bits(bits)[:12], "000123456789")
-        self.assertIsNone(decode_bits("000" + bits[3:]))
+    def test_opencv_reads_panel_without_current_indicator(self):
+        frame, evidence, _ = fixture()
+        layout = evidence.metadata["layouts"][3]
+        x, y, w, h = layout["underline"]
+        frame[y:y+h, x:x+w] = 50
+        codes, count = scan_panel(cv.cvtColor(frame, cv.COLOR_BGR2GRAY), layout, OpenCVReader())
+        self.assertEqual(len(codes), 1)
+        self.assertGreaterEqual(count, 2)
 
     def test_direct_with_known_screen_plane(self):
         frame, evidence, _ = fixture()
@@ -88,6 +93,27 @@ class MarkerAnalysisTests(unittest.TestCase):
         metadata = dict(evidence.metadata)
         del metadata["visible_frames"]
         self.assertEqual(DisplayEvidence(metadata, evidence.frames).visible_frames, 4)
+
+    def test_legacy_outline_geometry_decodes_with_opencv(self):
+        _, evidence, _ = fixture()
+        from calibration.display.ean13 import EAN13Painter, monotonic_ms_payload
+        metadata = dict(evidence.metadata)
+        metadata.pop("indicator_style")
+        metadata.pop("indicator_width")
+        metadata["outline_width"] = 4
+        metadata["layouts"] = []
+        surface = pygame.Surface((1920, 1080))
+        surface.fill((50, 50, 50))
+        for corner, layout in enumerate(evidence.metadata["layouts"]):
+            barcode = pygame.Rect(layout["barcode"])
+            old = {**layout, "outline": list(barcode.inflate(24, 24))}
+            metadata["layouts"].append(old)
+            EAN13Painter(barcode).draw(surface, monotonic_ms_payload(evidence.frames[8+corner]["marker_ns"]))
+        pygame.draw.rect(surface, (255, 255, 255), metadata["layouts"][3]["outline"], 4)
+        camera = np.transpose(pygame.surfarray.array3d(surface), (1, 0, 2))[:, :, ::-1].copy()
+        old_evidence = DisplayEvidence(metadata, evidence.frames)
+        result = MarkerAnalyzer(old_evidence, rectangle_points((0, 0, 1920, 1080))).analyze(camera, 123200)
+        self.assertEqual(result["selection"], "direct", result)
 
     def test_journal_pause_excludes_held_marker_even_before_receipt_of_pause(self):
         frame, evidence, _ = fixture()
@@ -154,12 +180,12 @@ class MarkerAnalysisTests(unittest.TestCase):
         result = MarkerAnalyzer(evidence, rectangle_points((0, 0, 1920, 1080))).analyze(frame, 123200)
         self.assertEqual(result["reason"], "newest_display_timing_unstable")
 
-    def test_two_outlines_are_rejected(self):
+    def test_two_underlines_are_rejected(self):
         frame, evidence, _ = fixture()
-        x, y, w, h = evidence.metadata["layouts"][2]["outline"]
+        x, y, w, h = evidence.metadata["layouts"][2]["underline"]
         cv.rectangle(frame, (x, y), (x + w - 1, y + h - 1), (255, 255, 255), 4)
         result = MarkerAnalyzer(evidence, rectangle_points((0, 0, 1920, 1080))).analyze(frame, 123200)
-        self.assertEqual(result["reason"], "missing_or_multiple_newest_outlines")
+        self.assertEqual(result["reason"], "missing_or_multiple_newest_indicators")
 
     def test_following_update_problems_reject_direct_and_inferred_markers(self):
         cases = (
@@ -317,7 +343,7 @@ class MarkerAnalysisTests(unittest.TestCase):
         x, y, w, h = evidence.metadata["layouts"][3]["bars"]
         inferred[y:y + h, x:x + w] = 200
         ambiguous = frame.copy()
-        x, y, w, h = evidence.metadata["layouts"][2]["outline"]
+        x, y, w, h = evidence.metadata["layouts"][2]["underline"]
         cv.rectangle(ambiguous, (x, y), (x + w - 1, y + h - 1), (255, 255, 255), 4)
         with TemporaryDirectory() as folder:
             root = Path(folder)

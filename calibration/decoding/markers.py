@@ -1,8 +1,7 @@
-"""Conservative optical marker selection for the persistent, outlined display.
+"""OpenCV marker decoding with separate current-indicator and timing evidence.
 
-The white outline registers the screen plane, not the camera image midpoint.
-Known journal payloads disambiguate its four possible screen positions. A
-manual screen quadrilateral is available when optics prevent registration.
+Old outline journals remain readable. New recordings use an underline outside
+barcode regions; neither kind of indicator is passed into regional decoding.
 """
 
 import json
@@ -13,8 +12,8 @@ import statistics
 import cv2 as cv
 import numpy as np
 
-from .ean13 import EAN_L_PATTERNS, EAN_G_PATTERNS, EAN_R_PATTERNS, EAN_LEFT_PARITY, ean13_check_digit
-from .display_timing import (
+from .opencv import OpenCVReader, normalized_code
+from calibration.display.timing import (
     DISPLAY_FORMAT, DISPLAY_JOURNAL_NAME, display_update_evidence, display_timing_event,
 )
 
@@ -36,31 +35,6 @@ def ordered_quad(points):
     return result if len(np.unique(result, axis=0)) == 4 else None
 
 
-def decode_bits(bits):
-    if len(bits) != 95 or bits[:3] != "101" or bits[45:50] != "01010" or bits[-3:] != "101":
-        return None
-    left, parity, right = [], [], []
-    for position in range(6):
-        pattern = bits[3 + position * 7:10 + position * 7]
-        if pattern in EAN_L_PATTERNS:
-            left.append(str(EAN_L_PATTERNS.index(pattern)))
-            parity.append("L")
-        elif pattern in EAN_G_PATTERNS:
-            left.append(str(EAN_G_PATTERNS.index(pattern)))
-            parity.append("G")
-        else:
-            return None
-        pattern = bits[50 + position * 7:57 + position * 7]
-        if pattern not in EAN_R_PATTERNS:
-            return None
-        right.append(str(EAN_R_PATTERNS.index(pattern)))
-    parity = "".join(parity)
-    if parity not in EAN_LEFT_PARITY:
-        return None
-    code = str(EAN_LEFT_PARITY.index(parity)) + "".join(left + right)
-    return code if ean13_check_digit(code[:12]) == code[-1] else None
-
-
 class DisplayEvidence:
     def __init__(self, metadata, frames, paused_indices=(), summary=None):
         if metadata.get("format") != DISPLAY_FORMAT or len(metadata.get("layouts", [])) != 4:
@@ -80,10 +54,15 @@ class DisplayEvidence:
         size = metadata.get("size", [])
         if len(size) != 2 or any(not isinstance(value, int) or value <= 0 for value in size):
             raise ValueError("Invalid display canvas size")
-        if not isinstance(metadata.get("outline_width"), int) or metadata["outline_width"] <= 0:
-            raise ValueError("Invalid display outline width")
+        self.indicator_style = metadata.get("indicator_style", "outline")
+        if self.indicator_style not in {"outline", "underline"}:
+            raise ValueError("Invalid current indicator style")
+        thickness = metadata.get("indicator_width", metadata.get("outline_width"))
+        if type(thickness) is not int or thickness <= 0:
+            raise ValueError("Invalid display indicator width")
+        self.indicator_width = thickness
         for layout in metadata["layouts"]:
-            for name in ("area", "barcode", "bars", "outline"):
+            for name in ("area", "barcode", "bars", self.indicator_style):
                 rect = layout.get(name, [])
                 if (len(rect) != 4 or any(not isinstance(value, int) for value in rect)
                         or min(rect) < 0 or rect[2] == 0 or rect[3] == 0
@@ -202,22 +181,28 @@ class DisplayEvidence:
                    next((row for row in reversed(values) if row.get("kind") == "summary"), None))
 
 
-def scan_panel(gray, layout):
-    """Several independently checked scanlines; never vote away a valid tear."""
-    x, y, width, height = layout["bars"]
-    columns = np.clip((x + (np.arange(95) + 0.5) * width / 95).astype(int), 0, gray.shape[1] - 1)
-    codes = []
-    for fraction in (0.15, 0.3, 0.5, 0.7, 0.85):
-        row = min(gray.shape[0] - 1, max(0, round(y + (height - 1) * fraction)))
-        samples = gray[row, columns]
-        dark, light = np.percentile(samples, (10, 90))
-        if light - dark < 25:
-            continue
-        code = decode_bits("".join("1" if value < (dark + light) / 2 else "0" for value in samples))
-        if code:
-            codes.append(code)
-    unique = sorted(set(codes))
-    return unique, len(codes)
+def scan_panel(gray, layout, reader):
+    """Read separate bands with OpenCV; never vote away a valid transition."""
+    quad = rectangle_points(layout["barcode"])[[3, 0, 1, 2]]
+    symbols = reader.decode_regions(gray, [(0, quad)])
+    codes = [code for symbol in symbols
+             if (code := normalized_code(symbol["raw_code"], symbol["type"]))]
+    return sorted(set(codes)), len(codes)
+
+
+def indicator_present(gray, layout, style, thickness):
+    if style == "outline":
+        return outline_present(gray, layout, thickness)
+    x, y, width, height = layout["underline"]
+    top, bottom = max(0, y-4), min(gray.shape[0], y+height+4)
+    line = gray[top:bottom, x+width//10:x+width-width//10]
+    left = gray[top:bottom, max(0, x-12):max(0, x-6)]
+    right = gray[top:bottom, x+width+6:x+width+12]
+    if not line.size or not left.size or not right.size:
+        return False
+    # Local contrast resists dim scenes; text and barcode pixels lie elsewhere.
+    background = max(float(np.median(left)), float(np.median(right)))
+    return bool(np.mean(np.max(line, axis=0) > background+25) >= .8)
 
 
 def outline_present(gray, layout, thickness):
@@ -258,9 +243,9 @@ def select_marker(observations, outlined, evidence):
         result["reason"] = reason
         return result
     if len(outlined) != 1:
-        return reject("missing_or_multiple_newest_outlines")
+        return reject("missing_or_multiple_newest_indicators")
     if any(item.get("transition") for item in observations):
-        return reject("differing_valid_scanline_values")
+        return reject("differing_valid_band_values")
     usable = {item["corner"]: item for item in observations if item.get("display_index") is not None}
     if not usable:
         return reject("no_registered_barcode")
@@ -283,7 +268,7 @@ def select_marker(observations, outlined, evidence):
     if index in evidence.paused_indices:
         return reject("display_marker_held_for_pause")
     if newest["corner"] != newest_corner:
-        return reject("outline_sequence_mismatch")
+        return reject("indicator_sequence_mismatch")
     result["next_corner"] = (newest_corner + 1) % 4
     occupied = {(newest_corner - age) % 4 for age in range(min(evidence.visible_frames, index + 1))}
     result["expected_empty_corners"] = sorted(set(range(4)) - occupied)
@@ -330,6 +315,7 @@ class MarkerAnalyzer:
         self.evidence = evidence
         self.size = tuple(evidence.metadata["size"])
         self.layouts = evidence.metadata["layouts"]
+        self.reader = OpenCVReader()
         self.transform = None
         self.fixed_transform = screen_corners is not None
         if screen_corners is not None:
@@ -339,15 +325,15 @@ class MarkerAnalyzer:
             self.transform = cv.getPerspectiveTransform(
                 corners, rectangle_points((0, 0, *self.size)))
 
-    def _read(self, gray, transform, reference_ms):
+    def _read(self, gray, transform, reference_ms, panel_reads=None):
         canvas = cv.warpPerspective(gray, transform, self.size)
         inverse = np.linalg.inv(transform)
         observations, outlined = [], []
         mismatches = 0
         for corner, layout in enumerate(self.layouts):
-            if outline_present(canvas, layout, self.evidence.metadata["outline_width"]):
+            if indicator_present(canvas, layout, self.evidence.indicator_style, self.evidence.indicator_width):
                 outlined.append(corner)
-            codes, count = scan_panel(canvas, layout)
+            codes, count = panel_reads[corner] if panel_reads is not None else scan_panel(canvas, layout, self.reader)
             if not codes:
                 continue
             points = cv.perspectiveTransform(rectangle_points(layout["bars"])[None], inverse)[0].tolist()
@@ -357,7 +343,7 @@ class MarkerAnalyzer:
                 mismatches += not matched
                 observations.append({
                     "corner": corner, "code": code, "points": points,
-                    "method": "rectified_guard_parity_checksum_scanlines",
+                    "method": "opencv_rectified_bands",
                     "valid_scanlines": count, "transition": len(codes) > 1,
                     "timestamp_ms": None if row is None else row["marker_ns"] // 1_000_000,
                     "display_index": row["index"] if matched and count >= 2 else None,
@@ -390,16 +376,17 @@ class MarkerAnalyzer:
         return result
 
     def _transforms(self, gray):
-        # Find complete bright rectangular outlines, not the brightest patch in
-        # the scene. Payload-to-journal agreement validates the screen mapping.
-        # A one-pixel contour error can move a thin outline or barcode module.
-        # Registration happens only on acquisition; keep camera resolution here.
+        # Close bar-width dark runs for geometry discovery only. The decoder
+        # always receives original grayscale pixels, excluding the indicator.
         small = gray
         seen = set()
         candidates = []
         thresholds = sorted(set([180, 210, 235, *map(int, np.percentile(small, (95, 98, 99.5)))]), reverse=True)
         for threshold in thresholds:
             _, mask = cv.threshold(small, threshold, 255, cv.THRESH_BINARY)
+            if self.evidence.indicator_style == "underline":
+                mask = cv.morphologyEx(mask, cv.MORPH_CLOSE,
+                                      np.ones((1, max(7, gray.shape[1] // 56)), np.uint8))
             contours, _ = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
             for contour in contours:
                 area = cv.contourArea(contour)
@@ -417,7 +404,8 @@ class MarkerAnalyzer:
                     candidates.append((area, points))
         for _area, points in sorted(candidates, key=lambda item: item[0], reverse=True)[:12]:
             for layout in self.layouts:
-                yield cv.getPerspectiveTransform(points, rectangle_points(layout["outline"]))
+                target = "outline" if self.evidence.indicator_style == "outline" else "barcode"
+                yield cv.getPerspectiveTransform(points, rectangle_points(layout[target]))
 
     def analyze(self, frame, reference_ms):
         gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
@@ -428,7 +416,7 @@ class MarkerAnalyzer:
             # A registered raster transition is evidence, not a reason to fit
             # a new transform until a different marker accidentally looks valid.
             if (result["observations"] and result["reason"] != "registration_or_journal_mismatch"
-                    and (result["outlined_corners"] or result["reason"] == "differing_valid_scanline_values")):
+                    and (result["outlined_corners"] or result["reason"] == "differing_valid_band_values")):
                 return result
         candidates = []
         for transform in self._transforms(gray):
@@ -450,4 +438,73 @@ class MarkerAnalyzer:
             return {"selection": "ambiguous", "reason": "conflicting_screen_registrations",
                     "screen_ns": None, "observations": [], "outlined_corners": []}
         result, self.transform, _score = candidates[0]
+        return result
+
+
+class ManualPanelAnalyzer:
+    """Rectify each user-marked panel independently, without automatic discovery."""
+
+    def __init__(self, evidence, quads, contrast=True, binary=False, valid_pixels=None):
+        self.evidence = evidence
+        self.quads = np.float32(quads).reshape(4, 4, 2)
+        self.analyzer = MarkerAnalyzer(evidence, rectangle_points((0, 0, *evidence.metadata["size"])))
+        self.contrast, self.binary = contrast, binary
+        self.clahe = cv.createCLAHE(2, (8, 8))
+        width, height = evidence.metadata["size"]
+        self.maps = [np.zeros((height, width), np.float32) for _ in range(2)]
+        self.inverses = []
+        for quad, layout in zip(self.quads, evidence.metadata["layouts"]):
+            inverse = cv.getPerspectiveTransform(rectangle_points(layout["barcode"]), quad)
+            self.inverses.append(inverse)
+            x, y, w, h = layout["area"]
+            xx, yy = np.meshgrid(np.arange(x, x+w, dtype=np.float32), np.arange(y, y+h, dtype=np.float32))
+            positions = cv.perspectiveTransform(np.stack((xx, yy), axis=-1).reshape(1, -1, 2), inverse).reshape(h, w, 2)
+            self.maps[0][y:y+h, x:x+w] = positions[:, :, 0]
+            self.maps[1][y:y+h, x:x+w] = positions[:, :, 1]
+        self.valid_canvas = (cv.remap(np.float32(valid_pixels), *self.maps, cv.INTER_LINEAR) > .999
+                             if valid_pixels is not None else None)
+
+    def analyze(self, frame, reference_ms):
+        gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        canvas = cv.remap(gray, *self.maps, cv.INTER_LINEAR, borderValue=0)
+        variants = [("grayscale", gray)]
+        if self.contrast:
+            variants.append(("local_contrast", self.clahe.apply(gray)))
+        regions = [(i, q[[3, 0, 1, 2]]) for i, q in enumerate(self.quads)]
+        raw = []
+        for name, pixels in variants:
+            raw.extend({**s, "preprocessing": name, "location_source": "manual_region"}
+                       for s in self.analyzer.reader.decode_regions(pixels, regions))
+        if self.binary:
+            raw.extend({**s, "preprocessing": "local_otsu", "location_source": "manual_region"}
+                       for s in self.analyzer.reader.decode_regions(gray, regions, binary=True))
+        by_corner = [{} for _ in range(4)]
+        for symbol in raw:
+            code = normalized_code(symbol["raw_code"], symbol["type"])
+            if code:
+                by_corner[symbol["region_corner"]].setdefault(code, set()).add(tuple(symbol["band"]))
+        reads = [(sorted(codes), max(map(len, codes.values()), default=0)) for codes in by_corner]
+        result = self.analyzer._read(canvas, np.eye(3), reference_ms, panel_reads=reads)
+        # A missing/extrapolated underline is unknown, not a black/empty panel.
+        ih, iw = gray.shape
+        indicator_supported = []
+        for layout in self.evidence.metadata["layouts"]:
+            x, y, w, h = layout[self.evidence.indicator_style]
+            # Include the neighboring pixels used to measure local contrast.
+            if self.evidence.indicator_style == "underline":
+                x, y, w, h = max(0, x-12), max(0, y-4), w+24, h+8
+            mx, my = (m[y:y+h, x:x+w] for m in self.maps)
+            supported = bool(((mx >= 0) & (mx <= iw-1) & (my >= 0) & (my <= ih-1)).all())
+            if self.valid_canvas is not None:
+                supported = supported and bool(self.valid_canvas[y:y+h, x:x+w].all())
+            indicator_supported.append(supported)
+        if not all(indicator_supported):
+            result["reason_before_geometry_check"] = result["reason"]
+            result.update(selection="ambiguous", screen_ns=None, reason="current_indicator_outside_image")
+        result["unsupported_indicator_corners"] = [i for i, supported in enumerate(indicator_supported) if not supported]
+        for item in result["observations"]:
+            item["points"] = cv.perspectiveTransform(np.float32(item["points"])[None], self.inverses[item["corner"]])[0].tolist()
+            item["method"] = "opencv_manual_bands"
+        result["raw_observations"] = raw
+        result["registration"] = "four_manual_undistorted_panels"
         return result

@@ -1,6 +1,6 @@
 import unittest
 
-from analyze_calibration_recording_offset import (
+from calibration.analysis.recording import (
     ean13_check_digit,
     normalize_ean13,
     normalize_timing_row,

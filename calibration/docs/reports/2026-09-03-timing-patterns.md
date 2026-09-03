@@ -106,18 +106,18 @@ The model does not improve every subset. The larger residuals when fewer codes d
 
 This document preserves the experiment separately from the calibration folder README. The live 109 ms correction remains the operational setting; these experimental predictors have not been enabled in acquisition. The original recordings and intrinsic file were not changed.
 
-The reusable programs are tracked under `CALIBRATION/analysis/`. Raw recordings, cached barcode observations, tables, and plots remain local under ignored `recordings/` directories and are not included in the commit. Reproduction requires `recordings/calibration_first/` and `recordings/calibration_second/`, including their camera and display journals.
+The reusable programs are tracked under `calibration/analysis/`. Raw recordings, cached barcode observations, tables, and plots remain local under ignored `recordings/` directories and are not included in the commit. Reproduction requires `recordings/calibration_first/` and `recordings/calibration_second/`, including their camera and display journals.
 
 Generate the raw barcode cache first if it is absent:
 
 ```bash
-python3 CALIBRATION/analysis/analyze_evidence.py
+python3 calibration/analysis/experiments/analyze_evidence.py
 ```
 
 That command writes `recordings/calibration_analysis_20260903/`. Pattern outputs below belong to `recordings/calibration_pattern_analysis_20260903/`:
 
-- `CALIBRATION/analysis/analyze_patterns.py`: preparation, fitting, chronological/external comparisons, causal-feature checks, metrics, and plots.
-- `CALIBRATION/analysis/analyze_evidence.py`: raw OpenCV/ZBar audit, exact journal matching, optional lens correction, and recording diagnostics.
+- `calibration/analysis/experiments/analyze_patterns.py`: preparation, fitting, chronological/external comparisons, causal-feature checks, metrics, and plots.
+- `calibration/analysis/experiments/analyze_evidence.py`: raw OpenCV audit, exact journal matching, optional lens correction, and recording diagnostics. The historical results above also contain ZBar reads; new runs use OpenCV only.
 - `prepared_frames.json`: every camera frame with joined timing and optical eligibility.
 - `provenance.json`: source-journal and cached-observation hashes; individual image hashes are retained in the prepared rows.
 - `results.json`: coefficients and metrics for all candidates, splits, subset checks, and bootstrap results.
@@ -129,10 +129,10 @@ That command writes `recordings/calibration_analysis_20260903/`. Pattern outputs
 Run preparation in the normal camera Python environment, then numerical analysis with the installed system NumPy/SciPy/Matplotlib environment:
 
 ```bash
-python3 CALIBRATION/analysis/analyze_patterns.py --prepare
+python3 calibration/analysis/experiments/analyze_patterns.py --prepare
 PYTHONNOUSERSITE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
   MPLCONFIGDIR=/tmp/segcom-pattern-matplotlib \
-  python3 CALIBRATION/analysis/analyze_patterns.py
+  python3 calibration/analysis/experiments/analyze_patterns.py
 ```
 
 These commands update the generated outputs under `recordings/`. Both programs accept `--output-dir`; the pattern program also accepts `--audit-dir` for a relocated barcode cache. Numerical analysis requires NumPy, SciPy, and Matplotlib; these are offline analysis dependencies, separate from the GUI requirements. The commands open no camera or window and do not build or install anything.

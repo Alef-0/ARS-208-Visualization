@@ -165,5 +165,5 @@ internal gap or reordered display frame.
 - Preserve raw times and the applied delay when changing synchronization logic;
   derived associations alone cannot be recalculated later.
 - Historical `camera_timestamps.json` and verbose JSONL rows remain readable by
-  `analyze_calibration_recording_offset.py`; new recordings do not duplicate the
+  `calibration/analysis/recording.py`; new recordings do not duplicate the
   journal into a JSON array.

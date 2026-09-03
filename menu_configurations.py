@@ -3,7 +3,7 @@ from pathlib import Path
 
 import FreeSimpleGUI as sg
 
-from CALIBRATION.paths import suggested_intrinsics
+from calibration.paths import suggested_intrinsics
 from interface_core import Configurations as BaseConfigurations
 
 

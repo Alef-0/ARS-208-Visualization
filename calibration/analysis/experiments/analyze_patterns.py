@@ -2,8 +2,8 @@
 """Compare causal timestamp corrections against cached optical marker readings.
 
 From the repository root (no cameras, windows, builds or source changes):
-  python3 CALIBRATION/analysis/analyze_patterns.py --prepare
-  PYTHONNOUSERSITE=1 python3 CALIBRATION/analysis/analyze_patterns.py
+  python3 calibration/analysis/experiments/analyze_patterns.py --prepare
+  PYTHONNOUSERSITE=1 python3 calibration/analysis/experiments/analyze_patterns.py
 
 Preparation uses the camera environment. Numerical analysis uses the installed
 system NumPy/SciPy/Matplotlib environment. Outputs default to
@@ -19,7 +19,7 @@ from pathlib import Path
 import sys
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 OUT = ROOT / "recordings" / "calibration_pattern_analysis_20260903"
 NAMES = ("calibration_first", "calibration_second")
 AUDIT = ROOT / "recordings/calibration_analysis_20260903"
@@ -36,8 +36,8 @@ def digest(path):
 def prepare():
     os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
     sys.path.insert(0, str(ROOT))
-    from CALIBRATION.marker_analysis import DisplayEvidence
-    from analyze_calibration_recording_offset import load_epochs, normalize_ean13, normalize_timing_row
+    from calibration.decoding.markers import DisplayEvidence
+    from calibration.analysis.recording import load_epochs, normalize_ean13, normalize_timing_row
     output, provenance = {}, {}
     for name in NAMES:
         folder = ROOT / "recordings" / name
@@ -60,7 +60,9 @@ def prepare():
                 raise ValueError(f"Image changed since raw decoding: {path}")
             accepted = []
             for method in ("zbar", "opencv"):
-                for symbol in old[method] + old["rejected_" + method]:
+                # Older saved audits contain ZBar observations; no ZBar decoder
+                # is loaded, and new OpenCV-only audits omit these fields.
+                for symbol in old.get(method, []) + old.get("rejected_" + method, []):
                     code = normalize_ean13(symbol["raw_code"], symbol["type"])
                     marker = evidence.lookup(code, round(timing["frame_monotonic_ns"] / 1e6)) if code else None
                     if (marker is not None and symbol.get("quality", 2) >= 2
@@ -81,7 +83,7 @@ def prepare():
                            marker_ns=newest["marker_ns"], corner=newest["corner"], display_index=newest["index"],
                            eligible=coherent and display["status"] == "clean",
                            exclusion="Wide conflicting generations" if not coherent else display["status"],
-                           agreement=latest["zbar"] == latest["opencv"],
+                           agreement=latest["zbar"] is not None and latest["zbar"] == latest["opencv"],
                            overlap=indices[-1] - indices[0] >= evidence.visible_frames,
                            display_issues=display["issue_codes"])
             rows.append(row)

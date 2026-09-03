@@ -180,87 +180,32 @@ pair into another snapshot folder.
 
 ## Calibration
 
-The existing calibration workflow uses camera channel 4 and the fullscreen
-clock in `CALIBRATION/calibration_screen_clock.py`. One persistent fullscreen
-canvas retains a configurable 1-4 clockwise-updated EAN-13 timestamps. The
-default is 3: the quadrant immediately ahead remains blank to expose partial
-updates/camera artifacts. Expired quadrants are cleared, and a pure-white
-rectangular outline identifies the newest marker. Choose the count in the
-Calibration tab's **Visible barcodes** control before starting. The display
-runs on one thread, samples monotonic time immediately
-before drawing near the next deadline, and presents once with `flip()`.
-Press **P** with the calibration window focused to freeze the display for a
-screenshot; press it again to resume with a fresh timing schedule. Camera
-recording continues. Held markers and the first resumed marker are excluded
-from automatic timing measurements; Q/Escape still closes the display.
+The Calibration tab records camera channel 4 while one persistent fullscreen
+canvas presents clockwise EAN-13 timestamps. Three panels remain visible by
+default; an underline below the time identifies the newest marker. Press **P**
+to pause/resume the display. Paused markers are excluded from timing analysis.
 
-When camera 4 is open, starting the clock display schedules a calibration
-recording after three seconds. Its destination is created immediately so the
-display timing journal includes the warm-up. Closing the display stops camera
-recording but leaves camera 4 open. In
-addition to JPEGs, the calibration folder contains a compact append-only frame
-journal, session clock anchors, sparse RTCP/transport events, and a recording
-summary. `display_timestamps.jsonl` additionally stores screen geometry,
-encoded times, deadlines, pre-flip submission times, flip-return observations,
-and irregular/missed-period candidates. Camera frame time is host-anchored PTS; NTP is retained independently
-for comparison and does not modify that timestamp. The configured 109 ms
-camera-to-radar adjustment remains provisional until a session-specific
-calibration validates it.
-
-After recording, analyze the EAN-13 markers and timing series with:
+Use the Visualization tab or the standalone viewer to mark the four corners
+of each panel on an undistorted middle frame. OpenCV then reads those fixed
+regions, with local contrast enabled and binary retry optional. Saved geometry
+is specific to the recording; alpha changes remap its coordinates consistently.
 
 ```bash
-python3 analyze_calibration_recording_offset.py /path/to/calibration-recording
+python3 visualize_calibration_recording.py /path/to/calibration-recording
+python3 analyze_calibration_recording_offset.py /path/to/calibration-recording \
+  --output-dir /path/to/analysis
 ```
 
-The analyzer registers the white outline to the display geometry and verifies
-EAN guards, parity and checksum on multiple scanlines. It uses the outlined
-marker directly, or the immediate predecessor plus one measured display
-period when the newest code cannot be read. It rejects ambiguous outlines,
-conflicting scanlines, unexpected content in the blank quadrant, and unstable display timing. Direct and inferred results
-are reported separately, with excluded observations retained in the JSON.
-Historical recordings without a display journal retain the legacy decoder.
+The analyzer retains per-frame evidence and excludes overlapping generations,
+ambiguous current indicators, unexpected blank-area content, and suspect or
+unverified display replacements. Readable codes alone do not establish exposure
+time. The configured 109 ms camera correction remains provisional and unchanged.
 
-The report compares screen monotonic time with host-anchored PTS, NTP
-progression, the DVR-to-host clock offset, receipt delay, and host clock
-movement. The marker now represents the time sampled before drawing, not
-`render time + 16.667 ms`. Neither it nor flip-return time measures physical
-panel scanout: submission-to-light delay, millisecond payload quantization,
-screen raster and camera exposure remain calibration uncertainty. Pygame vsync
-is a request, not a hardware guarantee. See `CALIBRATION/README.md` for timing
-details, standalone usage and manual screen-plane registration.
-
-## Calibration visualization
-
-Open the **Visualization** tab, select a calibration recording folder and an
-optional intrinsic-coefficients JSON, then click **OPEN CALIBRATION
-VISUALIZATION**. The separate viewer also runs directly:
-
-```bash
-python3 visualize_calibration_recording.py recordings/calibration_first
-```
-
-Use Previous/Next, Left/Right, the frame slider, or a frame number to navigate.
-The image can be shown as Original or Undistorted. **Also decode undistorted**
-adds corrected-image results alongside the original-image results. Clicking a
-table row marks that decoder's source region and shows its display quadrant,
-encoded time, exact journal timestamp, and PTS offset. Regions are mapped to
-the image currently displayed, even when decoded in the other image mode.
-
-The comparison includes OpenCV, optional system ZBar, and the existing outline
-scanline method. **Best candidate offset** prefers consistent outline evidence;
-otherwise the newest usable journal-matched code is explicitly provisional.
-Impossible future reads and conflicting generations cannot become a trusted
-estimate. **Analyze folder** computes separate outline/provisional distributions
-in the background, excludes suspect display timing, and keeps stream epochs
-separate. Navigation remains available; analysis can be cancelled.
-
-The viewer opens no camera, changes no latency settings, and writes no recording
-files. It requires Pillow and Tk; ZBar is optional and unavailable decoders are
-reported in the details. Intrinsic files use `camera_matrix` and `dist_coeffs`;
-optional `image_size: [width, height]` allows scaling from the calibration
-resolution. Without that field, the viewer indicates that it assumes the
-recorded image dimensions. See `processing/visualization/README.md` for details.
+See the [calibration guide](calibration/README.md) for the package map, display
+and marking controls, analysis commands and dated findings. The
+[inspection guide](calibration/inspection/README.md) explains the viewer's
+navigation, image variants, timing fields and cancellable scans. Generated
+recordings and reports stay local under `recordings/`.
 
 ## CSV conversion
 
@@ -303,7 +248,7 @@ See `tests/README.md` for the test-area map.
 | `interface_core.py` | Shared GUI layout and state transitions |
 | `sensors/` | Radar, RTSP camera, timestamp, and GPS integrations |
 | `processing/` | Plotting, filtering, recording, PCD reading, snapshots, and playback |
-| `CALIBRATION/` | Existing camera timing calibration display |
+| `calibration/` | Camera timing display, OpenCV decoding, inspection, analysis and study reports |
 | `convert_to_csv.py` | Recursive PCD-to-CSV export |
 | `content/` | ARS40X technical-documentation extracts |
 | `recordings/` | Generated recording data, kept outside source packages |

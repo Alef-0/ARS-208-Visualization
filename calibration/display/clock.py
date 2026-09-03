@@ -17,7 +17,7 @@ if __package__:
         EAN13Painter,
         monotonic_ms_payload,
     )
-    from .display_timing import DisplayJournal, FramePacer
+    from .timing import DisplayJournal, FramePacer
 else:
     from ean13 import (
         MAX_PIXEL_VALUE,
@@ -25,7 +25,7 @@ else:
         EAN13Painter,
         monotonic_ms_payload,
     )
-    from display_timing import DisplayJournal, FramePacer
+    from timing import DisplayJournal, FramePacer
 
 
 WINDOW_NAME = "Calibration Clock"
@@ -33,10 +33,10 @@ BACKGROUND_COLOR = (MIN_PIXEL_VALUE,) * 3
 FOREGROUND_COLOR = (MAX_PIXEL_VALUE,) * 3
 CORNER_COUNT = 4
 DEFAULT_VISIBLE_FRAMES = 3
-BARCODE_PADDING = 16
-OUTLINE_GAP = 8
-OUTLINE_WIDTH = 4
-OUTLINE_COLOR = (255, 255, 255)
+BARCODE_PADDING_X = 24
+BARCODE_PADDING_Y = 32
+UNDERLINE_HEIGHT = 4
+UNDERLINE_COLOR = (255, 255, 255)
 DISPLAY_REFRESH_HZ = 60
 
 
@@ -50,7 +50,7 @@ def format_monotonic_timestamp(timestamp_ns: int) -> str:
 class CornerLayout:
     area: pygame.Rect
     barcode: pygame.Rect
-    outline: pygame.Rect
+    underline: pygame.Rect
     clock_center: tuple[int, int]
 
 
@@ -83,11 +83,14 @@ def _make_layout(area: pygame.Rect, corner: int, clock_height: int) -> CornerLay
             clock_height,
         )
     barcode.height -= clock_height
-    barcode.inflate_ip(-BARCODE_PADDING * 2, -BARCODE_PADDING * 2)
-    outline = barcode.inflate(2 * (OUTLINE_GAP + OUTLINE_WIDTH),
-                              2 * (OUTLINE_GAP + OUTLINE_WIDTH))
-    return CornerLayout(area=area, barcode=barcode, outline=outline,
-                        clock_center=clock_area.center)
+    padding_x = min(BARCODE_PADDING_X, (area.width - 113) // 2)
+    padding_y = min(BARCODE_PADDING_Y, area.height // 10)
+    barcode.inflate_ip(-padding_x * 2, -padding_y * 2)
+    underline = pygame.Rect(0, clock_area.bottom - UNDERLINE_HEIGHT - 2,
+                            max(40, area.width // 3), UNDERLINE_HEIGHT)
+    underline.centerx = clock_area.centerx
+    return CornerLayout(area=area, barcode=barcode, underline=underline,
+                        clock_center=(clock_area.centerx, clock_area.centery - 4))
 
 
 class CalibrationRenderer:
@@ -105,7 +108,7 @@ class CalibrationRenderer:
             pygame.font.init()
         font_size = max(22, min(width // 32, height // 18))
         self._font = pygame.font.Font(None, font_size)
-        clock_height = self._font.get_linesize() + 4
+        clock_height = self._font.get_linesize() + 12
 
         self.target = target
         self.size = target.get_size()
@@ -120,11 +123,10 @@ class CalibrationRenderer:
         target.fill(BACKGROUND_COLOR)
 
     def render_next(self, timestamp_ns: int) -> int:
-        """Change one quadrant and the previous outline without clearing history."""
+        """Change one quadrant and the previous underline without clearing history."""
         corner = self._next_corner
         if self._newest_corner is not None:
-            pygame.draw.rect(self.target, BACKGROUND_COLOR,
-                             self._layouts[self._newest_corner].outline, OUTLINE_WIDTH)
+            self.target.fill(BACKGROUND_COLOR, self._layouts[self._newest_corner].underline)
         if self.visible_frames < CORNER_COUNT:
             expired = (corner - self.visible_frames) % CORNER_COUNT
             if self.timestamps[expired] is not None:
@@ -133,7 +135,7 @@ class CalibrationRenderer:
         layout = self._layouts[corner]
         self.target.fill(BACKGROUND_COLOR, layout.area)
         self._draw_corner(corner, timestamp_ns)
-        pygame.draw.rect(self.target, OUTLINE_COLOR, layout.outline, OUTLINE_WIDTH)
+        self.target.fill(UNDERLINE_COLOR, layout.underline)
         self.timestamps[corner] = timestamp_ns
         self._newest_corner = corner
         self._next_corner = (corner + 1) % CORNER_COUNT
@@ -157,13 +159,14 @@ class CalibrationRenderer:
 
     def metadata(self) -> dict:
         return {
-            "size": list(self.size), "outline_width": OUTLINE_WIDTH,
+            "size": list(self.size), "indicator_style": "underline",
+            "indicator_width": UNDERLINE_HEIGHT,
             "visible_frames": self.visible_frames,
             "timestamp_semantics": "monotonic time sampled before drawing, not physical scanout",
             "corner_order": ["top-left", "top-right", "bottom-right", "bottom-left"],
             "layouts": [
                 {"area": list(layout.area), "barcode": list(layout.barcode),
-                 "bars": list(painter.bars), "outline": list(layout.outline)}
+                 "bars": list(painter.bars), "underline": list(layout.underline)}
                 for layout, painter in zip(self._layouts, self._painters)
             ],
         }

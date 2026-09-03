@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Audit these recordings without changing images or application settings.
 
-Requires the existing OpenCV, NumPy, Pygame, and system libzbar installations.
+Requires the existing OpenCV, NumPy, Pygame, installations.
 The newest DECODED marker is a diagnostic, not a verified exposure timestamp.
 Run from any directory; reports default to recordings/calibration_analysis_20260903.
 """
@@ -16,7 +16,7 @@ import sys
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT = ROOT / "recordings" / "calibration_analysis_20260903"
 sys.path.insert(0, str(ROOT))
 
@@ -27,11 +27,11 @@ def initialize_analysis():
     # Plotting saved reports needs no camera/display modules or Pygame.
     global DisplayEvidence, load_epochs, load_manifest, normalize_ean13
     global normalize_timing_row, summarize, write_csv
-    global OpenCVReader, ZBarReader, Undistorter
-    from CALIBRATION.barcode_decoders import OpenCVReader, ZBarReader
-    from CALIBRATION.marker_analysis import DisplayEvidence
-    from processing.visualization.calibration_data import Undistorter
-    from analyze_calibration_recording_offset import (
+    global OpenCVReader, Undistorter
+    from calibration.decoding.opencv import OpenCVReader
+    from calibration.decoding.markers import DisplayEvidence
+    from calibration.decoding.geometry import Undistorter
+    from calibration.analysis.recording import (
         load_epochs, load_manifest, normalize_ean13, normalize_timing_row,
         summarize, write_csv,
     )
@@ -43,7 +43,6 @@ def matched(symbols, evidence, reference_ms, received_ns=None):
         code = normalize_ean13(symbol["raw_code"], symbol["type"])
         row = evidence.lookup(code, reference_ms) if code else None
         reason = ("checksum_or_journal_mismatch" if row is None else
-                  "insufficient_zbar_quality" if symbol.get("quality", 2) < 2 else
                   "marker_generated_after_camera_receipt" if received_ns is not None and row["marker_ns"] > received_ns else None)
         if reason:
             rejected.append({**symbol, "rejection_reason": reason})
@@ -65,7 +64,7 @@ def residual(values, correction):
             "p95_absolute_ms": float(np.percentile(abs(v), 95))} if len(v) else None
 
 
-def compare_intrinsics(path, output, zbar, detector):
+def compare_intrinsics(path, output, detector):
     """Small paired sensitivity check, not a validation of the camera calibration."""
     undistorter = Undistorter(path)
     matrix, distortion = undistorter.matrix, undistorter.distortion
@@ -80,7 +79,7 @@ def compare_intrinsics(path, output, zbar, detector):
             image = cv.imread(str(directory/row["camera_frame"]))
             entry = {"frame": row["camera_frame"]}
             for method, pixels in [("raw", image), ("undistorted", undistorter.image(image))]:
-                symbols = zbar.decode(pixels) + detector.decode(pixels)
+                symbols = detector.decode(pixels)
                 good, _ = matched(symbols, evidence, round(row["frame_monotonic_ns"]/1e6), row["received_monotonic_ns"])
                 entry[method] = sorted({s["index"] for s in good})
             frames.append(entry)
@@ -100,7 +99,7 @@ def compare_intrinsics(path, output, zbar, detector):
             row = normalize_timing_row(manifest[failed["camera_frame"]], epochs)
             image = cv.imread(str(directory/row["camera_frame"]))
             corrected = undistorter.image(image)
-            symbols = zbar.decode(corrected) + detector.decode(corrected)
+            symbols = detector.decode(corrected)
             good, bad = matched(symbols, evidence, round(row["frame_monotonic_ns"]/1e6), row["received_monotonic_ns"])
             recovery.append({"recording": name, "frame": row["camera_frame"],
                              "accepted_codes": good, "rejected_codes": bad,
@@ -126,8 +125,7 @@ def plot_results(reports, output):
         ax.legend(fontsize=8)
     groups = [("all_decoded_diagnostic_only", "All coherent decoded frames"),
               ("four_corners_decoded_diagnostic_only", "Four corners decoded (known overlap)"),
-              ("no_detected_overlap_and_clean_diagnostic_only", "No decoded overlap + clean software timing"),
-              ("both_decoders_same_newest_diagnostic_only", "Both decoders find the same newest code")]
+              ("no_detected_overlap_and_clean_diagnostic_only", "No decoded overlap + clean software timing")]
     ax = axes[1, 0]
     for idx, ((report, _), color) in enumerate(zip(reports, colors)):
         for y, (group, _) in enumerate(groups):
@@ -137,7 +135,7 @@ def plot_results(reports, output):
                         xerr=[[median-m["p05"]], [m["p95"]-median]],
                         fmt="o", color=color, capsize=3, label=Path(report["recording"]).name if y == 0 else None)
     ax.axvline(109, color="#555555", ls="--")
-    ax.set(yticks=range(4), yticklabels=[label for _, label in groups],
+    ax.set(yticks=range(len(groups)), yticklabels=[label for _, label in groups],
            xlabel="Median and central 90% of offsets (ms)", title="Marker-selection sensitivity")
     ax.invert_yaxis()
     ax.legend(fontsize=8)
@@ -160,7 +158,7 @@ def plot_results(reports, output):
     plt.close(fig)
 
 
-def audit(recording, output, step, zbar, detector, reuse=False):
+def audit(recording, output, step, detector, reuse=False):
     evidence = DisplayEvidence.load(recording)
     originals = load_manifest(recording)
     names = [row["frame"] for row in originals]
@@ -176,23 +174,21 @@ def audit(recording, output, step, zbar, detector, reuse=False):
         row = normalized[number]
         if reuse:
             original = cached[row["camera_frame"]]
-            zsymbols = original["zbar"] + original["rejected_zbar"]
             csymbols = original["opencv"] + original["rejected_opencv"]
         else:
             image = cv.imread(str(recording / row["camera_frame"]))
             if image is None:
                 raise ValueError("Unreadable image: " + row["camera_frame"])
-            zsymbols, csymbols = zbar.decode(image), detector.decode(image)
+            csymbols = detector.decode(image)
         reference_ms = round(row["frame_monotonic_ns"] / 1e6)
-        zb, zr = matched(zsymbols, evidence, reference_ms, row["received_monotonic_ns"])
         oc, orej = matched(csymbols, evidence, reference_ms, row["received_monotonic_ns"])
-        by_index = {s["index"]: s for s in zb + oc}
+        by_index = {s["index"]: s for s in oc}
         indices = sorted(by_index)
         obs = {"camera_frame": row["camera_frame"],
                "image_sha256": hashlib.sha256((recording/row["camera_frame"]).read_bytes()).hexdigest(),
                "elapsed_s": (row["frame_monotonic_ns"]-normalized[0]["frame_monotonic_ns"])/1e9,
                "frame_monotonic_ns": row["frame_monotonic_ns"],
-               "zbar": zb, "opencv": oc, "rejected_zbar": zr, "rejected_opencv": orej,
+               "opencv": oc, "rejected_opencv": orej,
                "decoded_indices": indices, "decoded_count": len(indices),
                "strict_exposure_calibration_accepted": False}
         if reuse and obs["image_sha256"] != original["image_sha256"]:
@@ -200,8 +196,6 @@ def audit(recording, output, step, zbar, detector, reuse=False):
         if indices:
             latest = by_index[indices[-1]]
             timing = evidence.marker_timing(latest["index"])
-            newest_zbar = max((s["index"] for s in zb), default=None)
-            newest_cv = max((s["index"] for s in oc), default=None)
             obs.update(
                 newest_decoded_index=latest["index"], newest_decoded_corner=latest["corner"],
                 newest_decoded_marker_ns=latest["marker_ns"],
@@ -210,12 +204,11 @@ def audit(recording, output, step, zbar, detector, reuse=False):
                 eligible_for_optical_diagnostics=indices[-1]-indices[0] <= 3,
                 decoded_corner_count=len({s["corner"] for s in by_index.values()}),
                 incompatible_with_single_display_state=indices[-1]-indices[0] >= evidence.visible_frames,
-                decoders_agree_on_newest=newest_zbar is not None and newest_zbar == newest_cv,
                 freshest_pts_offset_ms=(row["frame_monotonic_ns"]-latest["marker_ns"])/1e6,
                 freshest_receipt_offset_ms=(row["received_monotonic_ns"]-latest["marker_ns"])/1e6,
                 freshest_timing_status=timing["status"], freshest_timing_issues=timing["issue_codes"],
             )
-            for engine, decoded in (("zbar", zb), ("opencv", oc)):
+            for engine, decoded in (("opencv", oc),):
                 if decoded:
                     obs[engine+"_freshest_pts_offset_ms"] = (
                         row["frame_monotonic_ns"]-max(s["marker_ns"] for s in decoded))/1e6
@@ -224,7 +217,7 @@ def audit(recording, output, step, zbar, detector, reuse=False):
             print(recording.name, "processed", len(result), "images", flush=True)
 
     fields = ["freshest_pts_offset_ms", "freshest_receipt_offset_ms", "decoded_span_ms",
-              "zbar_freshest_pts_offset_ms", "opencv_freshest_pts_offset_ms"]
+              "opencv_freshest_pts_offset_ms"]
     optical = [r for r in result if r["decoded_count"]]
     coherent = [r for r in optical if r["eligible_for_optical_diagnostics"]]
     groups = {
@@ -232,7 +225,6 @@ def audit(recording, output, step, zbar, detector, reuse=False):
         "four_corners_decoded_diagnostic_only": [r for r in coherent if r["decoded_corner_count"] == 4],
         "clean_software_timing_diagnostic_only": [r for r in coherent if r["freshest_timing_status"] == "clean"],
         "no_detected_overlap_and_clean_diagnostic_only": [r for r in coherent if not r["incompatible_with_single_display_state"] and r["freshest_timing_status"] == "clean"],
-        "both_decoders_same_newest_diagnostic_only": [r for r in coherent if r["decoders_agree_on_newest"]],
     }
     timing_rows = []
     for raw, row in zip(originals, normalized):
@@ -248,19 +240,16 @@ def audit(recording, output, step, zbar, detector, reuse=False):
         timing_rows[i]["pts_step_ms"] = (normalized[i]["pts_ns"]-normalized[i-1]["pts_ns"])/1e6
     report = {
         "recording": str(recording), "sample_step": step,
-        "method": "Unwarped original pixels; independent OpenCV and ZBar EAN checks; exact payload-to-journal lookup. Grayscale conversion only for ZBar.",
+        "method": "Unwarped original pixels; OpenCV EAN checks; exact payload-to-journal lookup.",
         "limitation": "Newest decoded marker may not be the actual newest marker. No newest outline or physical exposure is verified. Optical offsets are exploratory, not calibration recommendations.",
-        "optical_filters": "Reject codes generated after camera receipt; retain ZBar quality >= 2. Exclude whole images spanning more than four consecutive marker indices from offset statistics (wide temporal mixing or false decoding). Every observation and rejection is retained.",
+        "optical_filters": "Reject codes generated after camera receipt. Exclude whole images spanning more than four consecutive marker indices from offset statistics (wide temporal mixing or false decoding). Every observation and rejection is retained.",
         "images": len(normalized), "images_audited": len(result), "images_decoded": len(optical),
-        "decoder_frame_counts": {e: sum(bool(r[e]) for r in result) for e in ["zbar", "opencv"]},
+        "decoder_frame_counts": {e: sum(bool(r[e]) for r in result) for e in ["opencv"]},
         "decoded_count_histogram": dict(collections.Counter(r["decoded_count"] for r in result)),
         "frames_excluded_wide_marker_sequence": len(optical)-len(coherent),
-        "causality_rejected_symbols": sum(s.get("rejection_reason") == "marker_generated_after_camera_receipt" for r in result for e in ["rejected_zbar", "rejected_opencv"] for s in r[e]),
+        "causality_rejected_symbols": sum(s.get("rejection_reason") == "marker_generated_after_camera_receipt" for r in result for e in ["rejected_opencv"] for s in r[e]),
         "incompatible_single_state_frames": sum(r.get("incompatible_with_single_display_state", False) for r in coherent),
         "four_corner_frames": sum(r.get("decoded_corner_count") == 4 for r in coherent),
-        "overlap_independently_confirmed_by_both_decoders": sum(
-            bool(common := {s["index"] for s in r["zbar"]} & {s["index"] for s in r["opencv"]})
-            and max(common)-min(common) >= 3 for r in coherent),
         "software_clean_optical_frames": len(groups["clean_software_timing_diagnostic_only"]),
         "pts_span_s": (normalized[-1]["pts_ns"]-normalized[0]["pts_ns"])/1e9,
         "pts_average_fps": (len(normalized)-1)*1e9/(normalized[-1]["pts_ns"]-normalized[0]["pts_ns"]),
@@ -281,7 +270,7 @@ def audit(recording, output, step, zbar, detector, reuse=False):
     with (destination/"raw_barcode_observations.jsonl").open("w") as handle:
         for row in result:
             handle.write(json.dumps(row)+"\n")
-    write_csv(destination/"raw_barcode_frames.csv", [{k:v for k,v in row.items() if k not in {"zbar", "opencv", "rejected_zbar", "rejected_opencv"}} for row in result])
+    write_csv(destination/"raw_barcode_frames.csv", [{k:v for k,v in row.items() if k not in {"opencv", "rejected_opencv"}} for row in result])
     (destination/"evidence_summary.json").write_text(json.dumps(report, indent=2)+"\n")
     print(recording.name, "decoded", len(optical), "/", len(result),
           "incompatible single state", report["incompatible_single_state_frames"], flush=True)
@@ -308,15 +297,15 @@ def main():
         return
     initialize_analysis()
     cv.setNumThreads(2)
-    zbar, detector = ZBarReader(), OpenCVReader()
+    detector = OpenCVReader()
     reports = []
     try:
         for name in ["calibration_first", "calibration_second"]:
-            reports.append(audit(ROOT/"recordings"/name, args.output_dir, args.sample_step, zbar, detector, args.reuse_observations))
+            reports.append(audit(ROOT/"recordings"/name, args.output_dir, args.sample_step, detector, args.reuse_observations))
         if args.intrinsics:
-            compare_intrinsics(args.intrinsics, args.output_dir, zbar, detector)
+            compare_intrinsics(args.intrinsics, args.output_dir, detector)
     finally:
-        zbar.close()
+        detector.close()
     first = [r["freshest_pts_offset_ms"] for r in reports[0][1] if r["decoded_count"] and r["eligible_for_optical_diagnostics"] and r["freshest_timing_status"] == "clean"]
     second = [r["freshest_pts_offset_ms"] for r in reports[1][1] if r["decoded_count"] and r["eligible_for_optical_diagnostics"] and r["freshest_timing_status"] == "clean"]
     if first and second:
