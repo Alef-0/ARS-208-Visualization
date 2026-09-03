@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 import json
 import math
@@ -20,6 +21,7 @@ EAN_PAYLOAD_DIGITS = 12
 EAN_MODULUS_MS = 10**EAN_PAYLOAD_DIGITS
 DEFAULT_JSON_NAME = "calibration_offset_analysis.json"
 DEFAULT_CSV_NAME = "calibration_offset_frames.csv"
+DEFAULT_DIAGNOSTICS_CSV_NAME = "calibration_frame_diagnostics.csv"
 MAX_BARCODE_DISTANCE_MS = 60_000
 
 
@@ -262,6 +264,20 @@ def summarize(values: Iterable[float | None]) -> dict[str, float | int] | None:
     }
 
 
+def frame_diagnostic(row, selection, accepted):
+    timing = selection.get("display_timing", {})
+    default_status = "unavailable_legacy" if selection["selection"] == "legacy_freshest" else "not_assessed"
+    return {
+        "camera_frame": row["camera_frame"], "accepted": accepted,
+        "reason": selection.get("reason"), "screen_selection": selection["selection"],
+        "display_index": selection.get("display_index"),
+        "frame_monotonic_ns": row["frame_monotonic_ns"],
+        "display_timing_status": timing.get("status", default_status),
+        "display_timing_issue_codes": timing.get("issue_codes", []),
+        "display_timing": timing,
+    }
+
+
 def analyze_recording(recording_dir: Path, *, screen_corners=None) -> dict[str, Any]:
     epochs = load_epochs(recording_dir)
     rows = [
@@ -297,6 +313,7 @@ def analyze_recording(recording_dir: Path, *, screen_corners=None) -> dict[str, 
     frame_results = []
     decode_failures = []
     excluded_frames = []
+    frame_diagnostics = []
     for row in rows:
         image_path = recording_dir / row["camera_frame"]
         if not image_path.is_file():
@@ -311,6 +328,7 @@ def analyze_recording(recording_dir: Path, *, screen_corners=None) -> dict[str, 
             if selection["screen_ns"] is None:
                 decode_failures.append(row["camera_frame"])
                 excluded_frames.append({"camera_frame": row["camera_frame"], **selection})
+                frame_diagnostics.append(frame_diagnostic(row, selection, False))
                 continue
             observed = [item for item in selection["observations"] if item.get("display_index") is not None]
             observed.sort(key=lambda item: item["timestamp_ms"])
@@ -325,8 +343,10 @@ def analyze_recording(recording_dir: Path, *, screen_corners=None) -> dict[str, 
                 decode_failures.append(row["camera_frame"])
                 excluded_frames.append({"camera_frame": row["camera_frame"],
                                         "selection": "ambiguous", "reason": "legacy_decode_failed"})
+                frame_diagnostics.append(frame_diagnostic(row, {**selection, "reason": "legacy_decode_failed"}, False))
                 continue
             screen_ns = max(visible_values_ms) * 1_000_000
+        frame_diagnostics.append(frame_diagnostic(row, selection, True))
         screen_unix_ns = (
             screen_ns + int(row["unix_minus_monotonic_ns"])
             if row["unix_minus_monotonic_ns"] is not None
@@ -345,6 +365,7 @@ def analyze_recording(recording_dir: Path, *, screen_corners=None) -> dict[str, 
             "screen_source_ean13": selection.get("source_ean13", visible_codes[-1]),
             "screen_source_corner": selection.get("source_corner"),
             "display_index": selection.get("display_index"),
+            "display_timing": selection.get("display_timing"),
             "added_period_ns": selection["added_period_ns"],
             "barcode_observations": selection.get("observations", []),
             "outlined_corners": selection.get("outlined_corners", []),
@@ -417,6 +438,13 @@ def analyze_recording(recording_dir: Path, *, screen_corners=None) -> dict[str, 
         "receipt_media_delay_ms",
         "system_clock_error_ms",
     )
+    display_timing = display_evidence.timing_catalog() if display_evidence else None
+    if display_timing is not None:
+        display_timing["camera_issue_counts"] = dict(Counter(
+            issue for row in frame_diagnostics for issue in row["display_timing_issue_codes"]))
+        display_timing["camera_frames_excluded"] = sum(
+            not row["accepted"] and row["display_timing_status"] in ("suspect", "unknown")
+            for row in frame_diagnostics)
     return {
         "recording_directory": str(recording_dir),
         "method": {
@@ -431,7 +459,7 @@ def analyze_recording(recording_dir: Path, *, screen_corners=None) -> dict[str, 
             ),
             "screen_selection": (
                 "white outlined marker, or immediate predecessor plus measured display period; "
-                "unstable/ambiguous observations excluded"
+                "marker arrival and following replacement checked; unstable/unknown/ambiguous observations excluded"
                 if display_evidence else "legacy maximum decoded timestamp (no outline evidence)"
             ),
             "screen_timestamp_semantics": (
@@ -443,6 +471,9 @@ def analyze_recording(recording_dir: Path, *, screen_corners=None) -> dict[str, 
         },
         "counts": {
             "journal_frames": len(rows),
+            "accepted_frames": len(frame_results),
+            "excluded_frames": len(excluded_frames),
+            # Historical aliases include timing rejections, not just decode failures.
             "decoded_frames": len(frame_results),
             "decode_failures": len(decode_failures),
             "direct_frames": sum(row["screen_selection"] == "direct" for row in frame_results),
@@ -450,6 +481,9 @@ def analyze_recording(recording_dir: Path, *, screen_corners=None) -> dict[str, 
         },
         "decode_failure_frames": decode_failures,
         "excluded_frames": excluded_frames,
+        "exclusion_reason_counts": dict(Counter(row["reason"] for row in excluded_frames)),
+        "display_timing": display_timing,
+        "frame_diagnostics": frame_diagnostics,
         "metrics": {
             field: summarize(result.get(field) for result in frame_results)
             for field in metric_fields
@@ -494,17 +528,24 @@ def main() -> None:
         raise SystemExit(f"Analysis failed: {error}") from error
     json_path = output_dir / DEFAULT_JSON_NAME
     csv_path = output_dir / DEFAULT_CSV_NAME
+    diagnostics_path = output_dir / DEFAULT_DIAGNOSTICS_CSV_NAME
     json_path.write_text(
         json.dumps(report, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     write_csv(csv_path, report["frames"])
+    write_csv(diagnostics_path, report["frame_diagnostics"])
     print(
-        f"Decoded {report['counts']['decoded_frames']} of "
-        f"{report['counts']['journal_frames']} frames."
+        f"Accepted {report['counts']['accepted_frames']} of "
+        f"{report['counts']['journal_frames']} frames for offset analysis."
     )
     print(f"JSON: {json_path}")
     print(f"CSV:  {csv_path}")
+    print(f"Frame diagnostics (accepted and excluded): {diagnostics_path}")
+    if report["display_timing"] is not None:
+        timing = report["display_timing"]
+        print(f"Display timing: {timing['totals']['timing_events']} event(s); "
+              f"{timing['camera_frames_excluded']} camera frame(s) excluded for suspect or unverified timing.")
     if report["excluded_frames"]:
         print("Excluded-frame reasons and decoded evidence are in the JSON report. "
               "If screen registration fails, supply --screen-corners TLx TLy TRx TRy BRx BRy BLx BLy.")

@@ -230,6 +230,38 @@ screen raster and camera exposure remain calibration uncertainty. Pygame vsync
 is a request, not a hardware guarantee. See `CALIBRATION/README.md` for timing
 details, standalone usage and manual screen-plane registration.
 
+## Calibration visualization
+
+Open the **Visualization** tab, select a calibration recording folder and an
+optional intrinsic-coefficients JSON, then click **OPEN CALIBRATION
+VISUALIZATION**. The separate viewer also runs directly:
+
+```bash
+python3 visualize_calibration_recording.py recordings/calibration_first
+```
+
+Use Previous/Next, Left/Right, the frame slider, or a frame number to navigate.
+The image can be shown as Original or Undistorted. **Also decode undistorted**
+adds corrected-image results alongside the original-image results. Clicking a
+table row marks that decoder's source region and shows its display quadrant,
+encoded time, exact journal timestamp, and PTS offset. Regions are mapped to
+the image currently displayed, even when decoded in the other image mode.
+
+The comparison includes OpenCV, optional system ZBar, and the existing outline
+scanline method. **Best candidate offset** prefers consistent outline evidence;
+otherwise the newest usable journal-matched code is explicitly provisional.
+Impossible future reads and conflicting generations cannot become a trusted
+estimate. **Analyze folder** computes separate outline/provisional distributions
+in the background, excludes suspect display timing, and keeps stream epochs
+separate. Navigation remains available; analysis can be cancelled.
+
+The viewer opens no camera, changes no latency settings, and writes no recording
+files. It requires Pillow and Tk; ZBar is optional and unavailable decoders are
+reported in the details. Intrinsic files use `camera_matrix` and `dist_coeffs`;
+optional `image_size: [width, height]` allows scaling from the calibration
+resolution. Without that field, the viewer indicates that it assumes the
+recorded image dimensions. See `processing/visualization/README.md` for details.
+
 ## CSV conversion
 
 Convert a recording tree with:

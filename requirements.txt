@@ -1,4 +1,5 @@
 FreeSimpleGUI
+Pillow
 bitstring
 numpy
 opencv-python

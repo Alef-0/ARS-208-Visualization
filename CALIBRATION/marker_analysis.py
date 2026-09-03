@@ -6,6 +6,7 @@ manual screen quadrilateral is available when optics prevent registration.
 """
 
 import json
+from collections import Counter
 from pathlib import Path
 import statistics
 
@@ -13,7 +14,9 @@ import cv2 as cv
 import numpy as np
 
 from .ean13 import EAN_L_PATTERNS, EAN_G_PATTERNS, EAN_R_PATTERNS, EAN_LEFT_PARITY, ean13_check_digit
-from .display_timing import DISPLAY_FORMAT, DISPLAY_JOURNAL_NAME
+from .display_timing import (
+    DISPLAY_FORMAT, DISPLAY_JOURNAL_NAME, display_update_evidence, display_timing_event,
+)
 
 
 def rectangle_points(rect):
@@ -59,7 +62,7 @@ def decode_bits(bits):
 
 
 class DisplayEvidence:
-    def __init__(self, metadata, frames, paused_indices=()):
+    def __init__(self, metadata, frames, paused_indices=(), summary=None):
         if metadata.get("format") != DISPLAY_FORMAT or len(metadata.get("layouts", [])) != 4:
             raise ValueError("Unsupported display timing journal")
         self.metadata = metadata
@@ -68,6 +71,7 @@ class DisplayEvidence:
         if type(self.visible_frames) is not int or not 1 <= self.visible_frames <= 4:
             raise ValueError("Invalid visible-frame count in display journal")
         self.frames = frames
+        self.summary = summary
         self.paused_indices = frozenset(paused_indices)
         if any(type(index) is not int or not -1 <= index < len(frames)
                for index in self.paused_indices):
@@ -102,6 +106,60 @@ class DisplayEvidence:
     def clean(row):
         return not (row.get("late_submit") or row.get("skipped_periods")
                     or row.get("irregular_interval") or row.get("resumed_after_pause"))
+
+    def update_evidence(self, index):
+        return display_update_evidence(
+            self.frames[index], self.frames[index - 1] if index else None, self.period_ns)
+
+    def marker_timing(self, index):
+        """Check how a marker arrived AND how it was replaced, without using camera receipt time."""
+        current = self.update_evidence(index)
+        following = self.update_evidence(index + 1) if index + 1 < len(self.frames) else None
+        issues = ["marker_" + issue for issue in current["issues"]]
+        if index in self.paused_indices:
+            issues.append("marker_held_for_pause")
+        if following is None:
+            issues.append("replacement_evidence_missing")
+        else:
+            issues.extend("replacement_" + issue for issue in following["issues"])
+            if following["interval_ns"] is None or not following["frame_period_ns"]:
+                issues.append("replacement_interval_unavailable")
+        unknown = {"replacement_evidence_missing", "replacement_interval_unavailable"}
+        status = "clean"
+        if issues:
+            status = "suspect" if any(issue not in unknown for issue in issues) else "unknown"
+        return {
+            "status": status,
+            "issue_codes": issues, "marker": current, "replacement": following,
+            "hold_interval_proxy_ns": following["interval_ns"] if following else None,
+            "excess_hold_proxy_ns": following["excess_interval_ns"] if following else None,
+        }
+
+    def timing_catalog(self):
+        """Reconstruct events from raw rows, including journals predating timing_event rows."""
+        events = []
+        for index in range(len(self.frames)):
+            event = display_timing_event(self.update_evidence(index), self.frames[index - 1] if index else None)
+            if event is not None:
+                events.append(event)
+        return {
+            "scope": "entire display session, including camera warm-up",
+            "semantics": "software timing suspicion; no physical exposure or scanout correction",
+            "journal_summary_present": self.summary is not None,
+            "recorded_summary": self.summary,
+            "totals": {
+                "presented_markers": len(self.frames),
+                "missed_period_candidates": sum(row.get("skipped_periods", 0) for row in self.frames),
+                "irregular_intervals": sum(bool(row.get("irregular_interval")) for row in self.frames),
+                "late_submissions": sum(bool(row.get("late_submit")) for row in self.frames),
+                "timing_events": len(events),
+            },
+            "event_issue_counts": dict(Counter(issue for event in events for issue in event["update"]["issues"])),
+            "affected_display_indices": sorted({index for event in events for index in event["affected_display_indices"]}),
+            "pause_held_display_indices": sorted(index for index in self.paused_indices if index >= 0),
+            "unverified_final_display_index": len(self.frames) - 1 if self.frames else None,
+            "events": events,
+        }
 
     def lookup(self, code, reference_ms):
         encoded = int(code[:12])
@@ -140,7 +198,8 @@ class DisplayEvidence:
             raise ValueError("Missing display journal session header")
         return cls(values[0], [row for row in values[1:] if row.get("kind") == "frame"],
                    [row.get("last_frame_index") for row in values[1:]
-                    if row.get("kind") == "pause" and row.get("paused") is True])
+                    if row.get("kind") == "pause" and row.get("paused") is True],
+                   next((row for row in reversed(values) if row.get("kind") == "summary"), None))
 
 
 def scan_panel(gray, layout):
@@ -217,6 +276,8 @@ def select_marker(observations, outlined, evidence):
     if index >= len(evidence.frames):
         return reject("display_evidence_missing")
     newest = evidence.frames[index]
+    result["display_index"] = index
+    result["display_timing"] = evidence.marker_timing(index)
     # The same optical payload exists before and throughout the pause. Exclude
     # every occurrence rather than guessing exposure time from receipt time.
     if index in evidence.paused_indices:
@@ -228,8 +289,11 @@ def select_marker(observations, outlined, evidence):
     result["expected_empty_corners"] = sorted(set(range(4)) - occupied)
     if any(not 0 <= index - item["display_index"] < evidence.visible_frames for item in usable.values()):
         return reject("mixed_display_generations")
-    if not evidence.clean(newest):
+    if result["display_timing"]["marker"]["issues"]:
         return reject("newest_display_timing_unstable")
+    if result["display_timing"]["status"] != "clean":
+        return reject("display_replacement_timing_unverified" if result["display_timing"]["status"] == "unknown"
+                      else "display_replacement_timing_unstable")
     if direct:
         result.update(selection="direct", screen_ns=direct["timestamp_ms"] * 1_000_000,
                       source_ean13=direct["code"], source_corner=newest_corner,
@@ -237,9 +301,22 @@ def select_marker(observations, outlined, evidence):
         return result
     period = evidence.period_ns
     preceding = evidence.frames[index - 1]
-    if period is None or index - 1 in evidence.paused_indices or not evidence.clean(preceding):
+    predecessor_timing = evidence.marker_timing(index - 1)
+    result["display_timing"]["inference_predecessor"] = predecessor_timing
+    if predecessor_timing["status"] != "clean":
+        result["display_timing"]["status"] = predecessor_timing["status"]
+        result["display_timing"]["issue_codes"].extend("predecessor_" + issue for issue in predecessor_timing["issue_codes"])
+    if period is None:
+        if result["display_timing"]["status"] == "clean":
+            result["display_timing"]["status"] = "unknown"
+        result["display_timing"]["issue_codes"].append("inference_period_unavailable")
+    if period is None or predecessor_timing["status"] != "clean":
         return reject("stable_measured_period_unavailable")
-    if not 0.75 * period <= newest["marker_ns"] - preceding["marker_ns"] <= 1.25 * period:
+    marker_interval = newest["marker_ns"] - preceding["marker_ns"]
+    result["display_timing"]["predecessor_marker_interval_ns"] = marker_interval
+    if not 0.75 * period <= marker_interval <= 1.25 * period:
+        result["display_timing"]["status"] = "suspect"
+        result["display_timing"]["issue_codes"].append("predecessor_marker_interval_irregular")
         return reject("predecessor_marker_interval_irregular")
     result.update(selection="inferred_one_period",
                   screen_ns=previous["timestamp_ms"] * 1_000_000 + period,

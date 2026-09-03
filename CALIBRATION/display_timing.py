@@ -17,6 +17,51 @@ DISPLAY_JOURNAL_NAME = "display_timestamps.jsonl"
 DISPLAY_FORMAT = "segcom-display-v2"
 
 
+def display_update_evidence(row, previous=None, fallback_period_ns=None):
+    """Describe software presentation evidence; never infer physical exposure."""
+    fields = ("index", "corner", "marker_ns", "deadline_ns", "submit_ns", "flip_return_ns",
+              "late_submit", "skipped_periods", "irregular_interval", "resumed_after_pause",
+              "skipped_before_render", "missed_after_submit")
+    result = {key: row.get(key) for key in fields}
+    period = row.get("frame_period_ns") or fallback_period_ns
+    interval = row.get("interval_ns")
+    if row.get("resumed_after_pause"):
+        interval = None
+    elif previous is not None and all(item.get("flip_return_ns") is not None for item in (row, previous)):
+        interval = row["flip_return_ns"] - previous["flip_return_ns"]
+    result.update(frame_period_ns=period, interval_ns=interval)
+    for name, field in (("submission_lateness_ns", "submit_ns"),
+                        ("return_lateness_ns", "flip_return_ns")):
+        result[name] = (row[field] - row["deadline_ns"]
+                        if row.get(field) is not None and row.get("deadline_ns") is not None else None)
+    result["excess_interval_ns"] = max(0, interval - period) if interval is not None and period else None
+    issues = []
+    if row.get("skipped_periods"):
+        issues.append("missed_period_candidates")
+    if row.get("late_submit") or (result["submission_lateness_ns"] or 0) > 0:
+        issues.append("late_submission")
+    if interval is not None and period and not 0.75 * period <= interval <= 1.25 * period:
+        issues.append("irregular_interval_long" if interval > period else "irregular_interval_short")
+    elif row.get("irregular_interval"):
+        issues.append("irregular_interval")
+    if row.get("resumed_after_pause"):
+        issues.append("resumed_after_pause")
+    result["issues"] = issues
+    return result
+
+
+def display_timing_event(update, previous=None):
+    """One event may implicate two markers and contain several overlapping issues."""
+    if not update["issues"]:
+        return None
+    return {
+        "kind": "timing_event", "detected_at_monotonic_ns": update["flip_return_ns"],
+        "affected_display_indices": ([previous["index"]] if previous is not None else []) + [update["index"]],
+        "previous_flip_return_ns": previous.get("flip_return_ns") if previous is not None else None,
+        "update": update,
+    }
+
+
 class FramePacer:
     def __init__(self, anchor_ns: int, refresh_hz: float = 60.0):
         if not math.isfinite(refresh_hz) or not 1 <= refresh_hz <= 1000:
@@ -73,6 +118,8 @@ class FramePacer:
             "interval_ns": interval,
             "render_budget_ns": self.render_budget_ns,
             "late_submit": submit_ns > self.deadline_ns,
+            "skipped_before_render": skipped_periods,
+            "missed_after_submit": missed,
             "skipped_periods": skipped_periods + missed,
             "irregular_interval": irregular,
         }
@@ -114,6 +161,8 @@ class DisplayJournal:
         self.skipped = 0
         self.irregular = 0
         self.late = 0
+        self._previous_frame = None
+        self._timing_events = 0
         self._write({"kind": "session", "format": DISPLAY_FORMAT, **metadata})
         if self._file:
             self._file.flush()
@@ -123,7 +172,13 @@ class DisplayJournal:
             self._file.write(json.dumps(value, separators=(",", ":")) + "\n")
 
     def append(self, corner: int, timing: dict):
-        self._write({"kind": "frame", "index": self.count, "corner": corner, **timing})
+        row = {"kind": "frame", "index": self.count, "corner": corner, **timing}
+        self._write(row)
+        event = display_timing_event(display_update_evidence(row, self._previous_frame), self._previous_frame)
+        if event is not None:
+            self._write(event)
+            self._timing_events += 1
+        self._previous_frame = row
         self.count += 1
         self.skipped += timing["skipped_periods"]
         self.irregular += bool(timing["irregular_interval"])
@@ -149,7 +204,9 @@ class DisplayJournal:
         try:
             self._write({"kind": "summary", "frames": self.count,
                          "missed_period_candidates": self.skipped,
-                         "irregular_intervals": self.irregular, "late_submissions": self.late})
+                         "irregular_intervals": self.irregular, "late_submissions": self.late,
+                         "timing_events": self._timing_events,
+                         "closed_at_monotonic_ns": time.monotonic_ns()})
         finally:
             if self._file:
                 self._file.close()

@@ -12,6 +12,7 @@ from CALIBRATION.calibration_screen_clock import (
     run_calibration_clock,
 )
 from CALIBRATION.display_timing import DisplayJournal, FramePacer
+from CALIBRATION.marker_analysis import DisplayEvidence
 from CALIBRATION.ean13 import (
     EAN13Painter,
     ean13_bits,
@@ -163,6 +164,38 @@ class CalibrationClockTests(unittest.TestCase):
         journal.append.assert_called_once()
         self.assertEqual(journal.append.call_args.args[0], 0)
         journal.close.assert_called_once()
+
+    def test_recorded_timing_event_links_delayed_update_to_previous_marker(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "display_timestamps.jsonl"
+            renderer = CalibrationRenderer(pygame.Surface((960, 540)))
+            journal = DisplayJournal(path, renderer.metadata())
+            pacer = FramePacer(0)
+            period = pacer.period_ns
+            journal.append(0, pacer.observe(period - 1_000_000, period - 500_000, period))
+            skipped = pacer.skip_expired(period * 2)
+            target = pacer.deadline_ns
+            timing = pacer.observe(target - 1_000_000, target + 1, target + period, skipped)
+            journal.append(1, timing)
+            journal.close()
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            events = [row for row in rows if row["kind"] == "timing_event"]
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["affected_display_indices"], [0, 1])
+            self.assertEqual(events[0]["update"]["skipped_before_render"], 1)
+            self.assertEqual(events[0]["update"]["missed_after_submit"], 1)
+            self.assertEqual(set(events[0]["update"]["issues"]),
+                             {"missed_period_candidates", "late_submission", "irregular_interval_long"})
+            loaded = DisplayEvidence.load(folder)
+            catalog = loaded.timing_catalog()
+            self.assertEqual(catalog["events"], events)
+            self.assertEqual(catalog["totals"]["presented_markers"], 2)
+            self.assertEqual(catalog["totals"]["missed_period_candidates"], 2)
+            self.assertEqual(catalog["totals"]["irregular_intervals"], 1)
+            self.assertEqual(catalog["totals"]["late_submissions"], 1)
+            self.assertTrue(catalog["journal_summary_present"])
+            self.assertEqual(rows[-1]["timing_events"], 1)
+            self.assertEqual(loaded.marker_timing(0)["status"], "suspect")
 
     def _run_control_events(self, batches, stop_event=None):
         """Drive controls with fake timing and off-screen pixels, never a window."""

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import FreeSimpleGUI as sg
 
+from CALIBRATION.paths import suggested_intrinsics
 from interface_core import Configurations as BaseConfigurations
 
 
@@ -317,6 +318,26 @@ class Configurations(BaseConfigurations):
             [sg.Push(), sg.Text("IDLE", key="calibration_status"), sg.Push()],
         ]
 
+    @staticmethod
+    def _create_visualization_layout():
+        root = Path(__file__).resolve().parent
+        return [
+            [sg.Text("Calibration recording"),
+             sg.Input(str(root / "recordings"), key="visualization_folder", expand_x=True),
+             sg.FolderBrowse("SELECT", target="visualization_folder")],
+            [sg.Text("Camera intrinsics (optional)"),
+             sg.Input(suggested_intrinsics(),
+                      key="visualization_intrinsics", expand_x=True),
+             sg.FileBrowse("SELECT JSON", target="visualization_intrinsics",
+                           file_types=(("JSON files", "*.json"),))],
+            [sg.Checkbox("Start with undistorted image and decoding", key="visualization_undistorted")],
+            [sg.Push(), sg.Button("OPEN CALIBRATION VISUALIZATION", key="visualization_open"), sg.Push()],
+            [sg.Text("Browse recorded frames, compare decoded timestamps, and inspect the marked source of each offset.",
+                     expand_x=True, justification="center")],
+            [sg.Text("Select a calibration folder to open the separate viewer.", key="visualization_status",
+                     expand_x=True, justification="center")],
+        ]
+
     def create_radar_control(self):
         tabs = [[
             sg.Tab("Configurations", self.options),
@@ -324,6 +345,7 @@ class Configurations(BaseConfigurations):
             sg.Tab("Snapshots", self._create_snapshot_layout()),
             sg.Tab("Display", self._create_general_configurations_layout()),
             sg.Tab("Calibration", self._create_calibration_layout()),
+            sg.Tab("Visualization", self._create_visualization_layout()),
         ]]
         self.radar_control = sg.Frame(
             "General Control",

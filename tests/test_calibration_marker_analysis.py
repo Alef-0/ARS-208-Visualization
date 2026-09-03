@@ -2,8 +2,10 @@
 
 import unittest
 import json
+import csv
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import cv2 as cv
 import numpy as np
@@ -13,7 +15,7 @@ from CALIBRATION.calibration_screen_clock import CalibrationRenderer
 from CALIBRATION.display_timing import DISPLAY_FORMAT
 from CALIBRATION.marker_analysis import DisplayEvidence, MarkerAnalyzer, decode_bits, rectangle_points
 from CALIBRATION.ean13 import ean13_bits
-from analyze_calibration_recording_offset import analyze_recording, write_csv
+from analyze_calibration_recording_offset import analyze_recording, write_csv, main as analyze_main
 
 
 def fixture(count=12, visible_frames=4):
@@ -21,10 +23,14 @@ def fixture(count=12, visible_frames=4):
     renderer = CalibrationRenderer(screen, visible_frames=visible_frames)
     frames = []
     period = round(1_000_000_000 / 60)
-    for index in range(count):
+    # Include the following presentation in the journal, while photographing
+    # the preceding state. Its timing is required to verify marker replacement.
+    for index in range(count + 1):
         marker = 123_000_000_000 + index * period
-        corner = renderer.render_next(marker)
+        corner = renderer.render_next(marker) if index < count else index % 4
         frames.append({"index": index, "corner": corner, "marker_ns": marker,
+                       "deadline_ns": marker + 1_000_000, "submit_ns": marker + 500_000,
+                       "flip_return_ns": marker + 1_000_000, "frame_period_ns": period,
                        "interval_ns": period if index else None, "late_submit": False,
                        "skipped_periods": 0, "irregular_interval": False})
     metadata = {"format": DISPLAY_FORMAT, **renderer.metadata()}
@@ -155,6 +161,146 @@ class MarkerAnalysisTests(unittest.TestCase):
         result = MarkerAnalyzer(evidence, rectangle_points((0, 0, 1920, 1080))).analyze(frame, 123200)
         self.assertEqual(result["reason"], "missing_or_multiple_newest_outlines")
 
+    def test_following_update_problems_reject_direct_and_inferred_markers(self):
+        cases = (
+            ({"skipped_periods": 2}, "replacement_missed_period_candidates"),
+            ({"late_submit": True}, "replacement_late_submission"),
+            ({"irregular_interval": True}, "replacement_irregular_interval"),
+        )
+        for changes, issue in cases:
+            for inferred in (False, True):
+                with self.subTest(issue=issue, inferred=inferred):
+                    frame, evidence, _ = fixture()
+                    evidence.frames[12].update(changes)
+                    if inferred:
+                        x, y, w, h = evidence.metadata["layouts"][3]["bars"]
+                        frame[y:y + h, x:x + w] = 200
+                    result = MarkerAnalyzer(evidence, rectangle_points((0, 0, 1920, 1080))).analyze(frame, 123200)
+                    self.assertEqual(result["reason"], "display_replacement_timing_unstable", result)
+                    self.assertIsNone(result["screen_ns"])
+                    self.assertEqual(result["display_index"], 11)
+                    self.assertIn(issue, result["display_timing"]["issue_codes"])
+
+    def test_raw_replacement_gap_detects_long_and_short_holds_without_flags(self):
+        for factor, issue in ((2, "replacement_irregular_interval_long"),
+                              (0.5, "replacement_irregular_interval_short"), (1.1, None)):
+            with self.subTest(factor=factor):
+                frame, evidence, _ = fixture()
+                following = evidence.frames[12]
+                gap = round(evidence.period_ns * factor)
+                following["flip_return_ns"] = evidence.frames[11]["flip_return_ns"] + gap
+                result = MarkerAnalyzer(evidence, rectangle_points((0, 0, 1920, 1080))).analyze(frame, 123200)
+                self.assertEqual(result["display_timing"]["hold_interval_proxy_ns"], gap)
+                if issue:
+                    self.assertIn(issue, result["display_timing"]["issue_codes"])
+                    self.assertIsNone(result["screen_ns"])
+                else:
+                    self.assertEqual(result["selection"], "direct")
+
+    def test_final_marker_is_unverified_even_when_journal_closed_cleanly(self):
+        frame, evidence, _ = fixture()
+        for summary in (None, {"kind": "summary", "frames": 12}):
+            with self.subTest(summary=summary):
+                final = DisplayEvidence(evidence.metadata, evidence.frames[:-1], summary=summary)
+                result = MarkerAnalyzer(final, rectangle_points((0, 0, 1920, 1080))).analyze(frame, 123200)
+                self.assertEqual(result["reason"], "display_replacement_timing_unverified")
+                self.assertEqual(result["display_timing"]["status"], "unknown")
+                self.assertIn("replacement_evidence_missing", result["display_timing"]["issue_codes"])
+
+    def test_missing_interval_is_unknown_and_older_complete_rows_still_work(self):
+        frame, evidence, _ = fixture()
+        for row in evidence.frames:
+            for key in ("flip_return_ns", "submit_ns", "deadline_ns", "frame_period_ns"):
+                del row[key]
+        analyzer = MarkerAnalyzer(evidence, rectangle_points((0, 0, 1920, 1080)))
+        self.assertEqual(analyzer.analyze(frame, 123200)["selection"], "direct")
+        evidence.frames[12]["interval_ns"] = None
+        result = analyzer.analyze(frame, 123200)
+        self.assertIn("replacement_interval_unavailable", result["display_timing"]["issue_codes"])
+        self.assertEqual(result["display_timing"]["status"], "unknown")
+
+    def test_pause_gap_is_catalogued_as_pause_without_counting_missed_periods(self):
+        _, evidence, _ = fixture()
+        evidence.frames[12].update(resumed_after_pause=True, interval_ns=None,
+                                   flip_return_ns=evidence.frames[12]["flip_return_ns"] + 10_000_000_000)
+        timing = evidence.marker_timing(11)
+        self.assertIsNone(timing["hold_interval_proxy_ns"])
+        self.assertIn("replacement_resumed_after_pause", timing["issue_codes"])
+        catalog = evidence.timing_catalog()
+        self.assertEqual(catalog["totals"]["missed_period_candidates"], 0)
+        self.assertEqual(catalog["event_issue_counts"], {"resumed_after_pause": 1})
+
+    def test_inference_timing_failures_have_specific_diagnostics(self):
+        for count, issue in ((4, "inference_period_unavailable"),
+                             (12, "predecessor_marker_interval_irregular")):
+            with self.subTest(issue=issue):
+                frame, evidence, _ = fixture(count=count)
+                if count == 12:
+                    evidence.frames[11]["marker_ns"] -= 8_000_000
+                    evidence = DisplayEvidence(evidence.metadata, evidence.frames)
+                x, y, w, h = evidence.metadata["layouts"][3]["bars"]
+                frame[y:y + h, x:x + w] = 200
+                result = MarkerAnalyzer(evidence, rectangle_points((0, 0, 1920, 1080))).analyze(frame, 123200)
+                self.assertIsNone(result["screen_ns"])
+                self.assertIn(issue, result["display_timing"]["issue_codes"])
+                self.assertNotEqual(result["display_timing"]["status"], "clean")
+
+    def test_report_and_diagnostics_csv_catalogue_affected_images_without_biasing_offsets(self):
+        clean, _, _ = fixture(count=11)
+        held, evidence, _ = fixture()
+        inferred_held = held.copy()
+        x, y, w, h = evidence.metadata["layouts"][3]["bars"]
+        inferred_held[y:y + h, x:x + w] = 200
+        following = evidence.frames[12]
+        following.update(skipped_periods=1, late_submit=True, irregular_interval=True,
+                         submit_ns=following["deadline_ns"] + 1,
+                         flip_return_ns=following["flip_return_ns"] + evidence.period_ns)
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            display_rows = [{"kind": "session", **evidence.metadata}] + [
+                {"kind": "frame", **row} for row in evidence.frames]
+            (root / "display_timestamps.jsonl").write_text("".join(json.dumps(row) + "\n" for row in display_rows))
+            rows = []
+            for index, image in enumerate((clean, held, inferred_held)):
+                filename = f"camera_{index:06d}.jpg"
+                self.assertTrue(cv.imwrite(str(root / filename), image))
+                rows.append({"camera_frame": filename, "timing": {
+                    "host_monotonic_received_ns": 123_300_000_000 + index * 33_333_333,
+                    "pipeline_age_ns": 100_000_000}})
+            (root / "camera_timestamps.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+            arguments = ["analyze", str(root), "--output-dir", str(root), "--screen-corners",
+                         "0", "0", "1919", "0", "1919", "1079", "0", "1079"]
+            with patch("sys.argv", arguments):
+                analyze_main()
+            report = json.loads((root / "calibration_offset_analysis.json").read_text())
+            self.assertEqual(report["metrics"]["pts_screen_offset_ms"]["count"], 1)
+            self.assertEqual(report["frames"][0]["camera_frame"], "camera_000000.jpg")
+            self.assertEqual(report["display_timing"]["camera_frames_excluded"], 2)
+            self.assertEqual(report["exclusion_reason_counts"], {"display_replacement_timing_unstable": 2})
+            self.assertEqual(report["display_timing"]["totals"]["timing_events"], 1)
+            self.assertEqual(report["display_timing"]["events"][0]["affected_display_indices"], [11, 12])
+            self.assertEqual(report["display_timing"]["camera_issue_counts"]["replacement_late_submission"], 2)
+            with (root / "calibration_frame_diagnostics.csv").open() as handle:
+                diagnostics = list(csv.DictReader(handle))
+            self.assertEqual([row["accepted"] for row in diagnostics], ["True", "False", "False"])
+            self.assertIn("replacement_irregular_interval_long", json.loads(diagnostics[1]["display_timing_issue_codes"]))
+            self.assertEqual(json.loads(diagnostics[1]["display_timing"])["replacement"]["index"], 12)
+            # A truncated recording may leave every selected marker unverified.
+            # Still emit usable diagnostics and empty offset statistics.
+            self.assertTrue(cv.imwrite(str(root / "camera_000000.jpg"), held))
+            (root / "display_timestamps.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in display_rows[:-1]) + '{"kind":')
+            with patch("sys.argv", arguments):
+                analyze_main()
+            report = json.loads((root / "calibration_offset_analysis.json").read_text())
+            self.assertEqual(report["counts"]["accepted_frames"], 0)
+            self.assertEqual(report["counts"]["excluded_frames"], 3)
+            self.assertIsNone(report["metrics"]["pts_screen_offset_ms"])
+            self.assertEqual(report["display_timing"]["camera_frames_excluded"], 3)
+            self.assertTrue(all(row["display_timing_status"] == "unknown" for row in report["frame_diagnostics"]))
+            self.assertFalse(report["display_timing"]["journal_summary_present"])
+            self.assertTrue((root / "calibration_offset_frames.csv").read_text().startswith("camera_frame,"))
+
     def test_valid_scanline_disagreement_is_not_voted_away(self):
         before, evidence, renderer = fixture()
         renderer.render_next(123_200_000_000)
@@ -217,7 +363,7 @@ class MarkerAnalysisTests(unittest.TestCase):
                 {"kind": "frame", **row} for row in evidence.frames]
             text = "".join(json.dumps(row) + "\n" for row in rows)
             path.write_text(text + '{"kind":')
-            self.assertEqual(len(DisplayEvidence.load(folder).frames), 12)
+            self.assertEqual(len(DisplayEvidence.load(folder).frames), 13)
             path.write_text(text + '{"kind":\n')
             with self.assertRaises(ValueError):
                 DisplayEvidence.load(folder)

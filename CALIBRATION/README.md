@@ -72,6 +72,23 @@ and a final summary. Rows retain:
 - observed interval, estimated period and rendering budget;
 - late submissions, missed-period candidates and irregular intervals.
 
+New frame rows also split missed-period candidates into `skipped_before_render`
+and `missed_after_submit`; their sum remains `skipped_periods`.
+When a timing problem is observed, the recorder appends a `kind: "timing_event"`
+row after the frame row. It records the detection time, the current update's
+raw timing and issue codes, and `affected_display_indices` linking the update
+to its preceding marker. The preceding marker may have remained outlined too
+long while waiting for this update. The event records signed submission/return
+lateness and any excess flip interval, all in nanoseconds. Long and short
+irregular intervals are distinguished. These are potential associations, not
+proof that every image of either marker was exposed during the problem.
+
+Event rows do not increment the marker counter. They use the existing buffered
+journal, outside drawing/presentation, and retain only the previous frame in
+memory. Resume boundaries are catalogued separately as `resumed_after_pause`;
+the intentional pause is not counted as an irregular or missed display period.
+The final summary includes `timing_events` and `closed_at_monotonic_ns`.
+
 The session header also records `visible_frames`, so analysis applies the same
 history length. Older v2 journals without that field are interpreted as four
 visible markers, matching the first persistent-canvas implementation.
@@ -131,6 +148,48 @@ use if its only code is unreadable. Missing/multiple outlines, mixed generations
 timing gaps and unknown payloads are excluded with reasons and observations in
 the JSON report. Direct and inferred distributions are also reported separately.
 These safeguards are conservative heuristics, not proof of exposure time.
+For both direct and inferred readings, analysis checks the selected marker's
+arrival **and its following replacement**. A normally presented marker A is
+excluded if update B has missed-period candidates, a late submission, an
+irregular interval, or a resume boundary. This closes the case where A remained
+on screen too long but only B's journal entry recorded the delay. Raw successive
+flip-return times are also checked against 75%-125% of the replacement update's
+period, even when the boolean irregular flag is absent or false. Older journals
+can use the recorded interval and measured median period instead.
+
+All images selecting the affected marker are conservatively excluded, including
+ones that might have been exposed before the delay. Camera receipt/PTS time is
+not used to guess which side of the delay an exposure belongs to. No missed
+period is added to the decoded timestamp as a correction. An absent following
+update (including the final marker of a cleanly closed journal), or unavailable
+replacement interval/period, produces an `unknown` assessment and excludes the
+measurement. Closing the journal does not establish when the last marker stopped
+emitting light. The one-period fallback also checks its source predecessor.
+
+Each assessed image retains `display_timing`: `clean`, `suspect`, or `unknown`,
+specific `issue_codes`, the selected marker and replacement timing, and a
+flip-return-based `hold_interval_proxy_ns` / `excess_hold_proxy_ns`. For example,
+`replacement_irregular_interval_long` identifies a potentially overlong hold;
+`marker_late_submission` identifies a late arrival. Images that cannot be
+registered/selected are `not_assessed`, never silently marked clean.
+
+The analysis outputs now include:
+
+- `calibration_offset_analysis.json`: display-session totals and reconstructed
+  events, per-issue camera-frame counts, exclusion-reason counts, and diagnostics
+  for every camera image. Events are reconstructed from raw frame rows, so older
+  journals work and recorded event rows are not double-counted. Display totals
+  include the warm-up; camera counts cover only recorded images. Issue counts
+  overlap and must not be added as unique lost-frame counts.
+- `calibration_offset_frames.csv`: accepted offset measurements with their
+  display timing assessment; rejected samples never enter offset statistics.
+- `calibration_frame_diagnostics.csv`: every recorded camera image, its
+  acceptance decision/reason, selected display index, timing status, issue codes,
+  and detailed timing evidence (structured values are JSON inside CSV cells).
+
+Old recordings without any display journal remain explicitly labelled
+`unavailable_legacy` in diagnostics; no display timing assurance is implied.
+
 Markers held for a pause are excluded as `display_marker_held_for_pause`, even
 when seen just before the pause: the same optical payload cannot distinguish
 that original presentation from the held image. The first resumed marker is

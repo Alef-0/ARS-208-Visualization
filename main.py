@@ -3,6 +3,8 @@ from datetime import datetime
 import math
 from pathlib import Path
 import signal
+import subprocess
+import sys
 import time
 from multiprocessing import get_context
 from queue import Empty
@@ -32,6 +34,7 @@ class RuntimeState:
     pending_calibration_camera: dict | None = None
     calibration_clock_process: object | None = None
     calibration_clock_stop_event: object | None = None
+    visualization_process: object | None = None
     process_context: object | None = None
 
 
@@ -351,11 +354,68 @@ def _request_snapshot_playback(
         )
 
 
+def _start_calibration_visualization(values, config, runtime):
+    process = runtime.visualization_process
+    if process is not None and process.poll() is None:
+        return
+    folder_text = str(values.get("visualization_folder", "")).strip()
+    folder = Path(folder_text).expanduser()
+    if not folder_text or not folder.is_dir() or not any(
+        (folder / name).is_file() for name in ("camera_timestamps.jsonl", "camera_timestamps.json")
+    ):
+        sg.popup_error("Select a calibration folder containing camera_timestamps.jsonl or camera_timestamps.json",
+                       title="Visualization")
+        return
+    command = [sys.executable, "-m", "processing.visualization.calibration_viewer", str(folder.resolve())]
+    intrinsics_text = str(values.get("visualization_intrinsics", "")).strip()
+    if intrinsics_text:
+        intrinsics = Path(intrinsics_text).expanduser()
+        if not intrinsics.is_file():
+            sg.popup_error("The selected intrinsic coefficients file does not exist", title="Visualization")
+            return
+        command.extend(["--intrinsics", str(intrinsics.resolve())])
+    if values.get("visualization_undistorted"):
+        if not intrinsics_text:
+            sg.popup_error("Choose a camera intrinsic JSON for undistorted viewing", title="Visualization")
+            return
+        command.append("--undistorted")
+    try:
+        runtime.visualization_process = subprocess.Popen(command, cwd=str(Path(__file__).resolve().parent))
+    except OSError as error:
+        sg.popup_error(f"Could not start calibration visualization: {error}", title="Visualization")
+        return
+    config.window["visualization_open"].update(disabled=True)
+    config.window["visualization_status"].update("Viewer open — close its window to select another recording here.")
+
+
+def _service_visualization(config, runtime):
+    process = runtime.visualization_process
+    if process is not None and process.poll() is not None:
+        runtime.visualization_process = None
+        config.window["visualization_open"].update(disabled=False)
+        config.window["visualization_status"].update(
+            "Viewer closed." if process.returncode == 0 else f"Viewer exited with error {process.returncode}; see terminal details.")
+
+
+def _stop_visualization(runtime):
+    process = runtime.visualization_process
+    if process is not None and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1)
+
+
 def _handle_gui_event(
     event, values, config, runtime,
     send_radar, send_cam, send_gps, send_playback, send_snapshot_playback,
     shutdown_event,
 ):
+    if event == "visualization_open":
+        _start_calibration_visualization(values, config, runtime)
+        return
     if event == "snapshot_playback_toggle":
         _request_snapshot_playback(
             values, config, runtime, send_radar, send_cam, send_snapshot_playback
@@ -587,6 +647,7 @@ def _run_event_loop(
             send_radar, send_cam, send_playback, send_snapshot_playback,
         )
         _service_calibration(config, runtime, send_cam)
+        _service_visualization(config, runtime)
 
 
 def _stop_calibration_clock(runtime):
@@ -657,6 +718,7 @@ def main():
         )
     finally:
         _stop_calibration_clock(runtime)
+        _stop_visualization(runtime)
         base._shutdown(
             processes,
             (send_radar, send_cam, send_gps, send_playback, send_snapshot_playback),
