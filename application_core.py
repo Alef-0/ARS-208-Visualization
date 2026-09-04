@@ -139,7 +139,7 @@ def _request_recording_stop(config, runtime, send_cam):
 def _is_recording_folder(folder: Path) -> bool:
     return (
         folder.is_dir()
-        and any(folder.glob("*.pcd"))
+        and any(folder.rglob("*.pcd"))
         and (
             (folder / RECORDING_METADATA_NAME).is_file()
             or (folder / TIMESTAMPS_METADATA_NAME).is_file()

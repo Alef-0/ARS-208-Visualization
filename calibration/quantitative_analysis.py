@@ -31,11 +31,11 @@ FRAMES_CSV = "calibration_frames.csv"
 VERDICT_JSON = "calibration_verdict.json"
 VERDICT_MARKDOWN = "calibration_verdict.md"
 PREDICTIONS_CSV = "calibration_strategy_predictions.csv"
-TIMELINE_GRAPH = "calibration_offset_timeline.svg"
-RESIDUAL_GRAPH = "calibration_residual_cdf.svg"
-OFFSET_HISTOGRAM = "calibration_offset_histogram.svg"
-FIXED_RESIDUAL_HISTOGRAM = "calibration_fixed_residual_histogram.svg"
-PTS_RESIDUAL_HISTOGRAM = "calibration_pts_residual_histogram.svg"
+TIMELINE_GRAPH = "calibration_offset_timeline.png"
+RESIDUAL_GRAPH = "calibration_residual_cdf.png"
+OFFSET_HISTOGRAM = "calibration_offset_histogram.png"
+FIXED_RESIDUAL_HISTOGRAM = "calibration_fixed_residual_histogram.png"
+PTS_RESIDUAL_HISTOGRAM = "calibration_pts_residual_histogram.png"
 _PLOTTING = None
 
 
@@ -298,7 +298,11 @@ def _strategy_predictions(
 
 
 def _write_timeline_graph(
-    path: Path, evidence: list[FrameEvidence], clean_median: float
+    path: Path,
+    evidence: list[FrameEvidence],
+    clean_median: float,
+    *,
+    save_svg: bool = False,
 ) -> None:
     plt, _ = _plotting()
     plotted = [row for row in evidence if row.offset_ms is not None]
@@ -330,7 +334,7 @@ def _write_timeline_graph(
     )
     axis.grid(alpha=0.22)
     axis.legend(ncols=2, fontsize=9)
-    _save_figure(figure, path)
+    _save_figure(figure, path, save_svg=save_svg)
 
 
 def _write_residual_graph(
@@ -340,6 +344,8 @@ def _write_residual_graph(
     definitions: dict,
     holdout_slice: slice,
     best_key: str,
+    *,
+    save_svg: bool = False,
 ) -> None:
     plt, _ = _plotting()
     keys = ["fixed_109_ms", "fixed_train_median"]
@@ -365,14 +371,15 @@ def _write_residual_graph(
     )
     axis.grid(alpha=0.22)
     axis.legend(fontsize=9)
-    _save_figure(figure, path)
+    _save_figure(figure, path, save_svg=save_svg)
 
 
-def _save_figure(figure, svg_path: Path) -> None:
-    """Save every analyzer graph as vector SVG and display-friendly PNG."""
+def _save_figure(figure, png_path: Path, *, save_svg: bool = False) -> None:
+    """Save a display-friendly PNG and, when requested, a vector SVG."""
     plt, _ = _plotting()
-    figure.savefig(svg_path, bbox_inches="tight")
-    figure.savefig(svg_path.with_suffix(".png"), dpi=180, bbox_inches="tight")
+    figure.savefig(png_path, dpi=180, bbox_inches="tight")
+    if save_svg:
+        figure.savefig(png_path.with_suffix(".svg"), bbox_inches="tight")
     plt.close(figure)
 
 
@@ -395,6 +402,7 @@ def _write_histogram(
     *,
     symmetric_about_zero: bool = False,
     references: tuple[tuple[float, str, str], ...] = (),
+    save_svg: bool = False,
 ) -> None:
     """Render one strategy per panel using compact bins and an individual range."""
     plt, PercentFormatter = _plotting()
@@ -440,7 +448,7 @@ def _write_histogram(
         axis.grid(axis="y", alpha=0.22)
         if references:
             axis.legend(fontsize=8, loc="upper left")
-    _save_figure(figure, path)
+    _save_figure(figure, path, save_svg=save_svg)
 
 
 def _write_predictions(
@@ -475,6 +483,7 @@ def _markdown(report: dict) -> str:
     sample = report["clean_offset_distribution"]
     verdict = report["verdict"]
     quality = report["data_quality"]
+    graph_suffixes = " / ".join(f"`.{suffix}`" for suffix in report["graph_formats"])
     lines = [
         "# Calibration timing verdict",
         "",
@@ -547,11 +556,11 @@ def _markdown(report: dict) -> str:
         "",
         "## Files",
         "",
-        f"- `{Path(TIMELINE_GRAPH).stem}.png` / `.svg`: clean and excluded offsets over camera-frame order",
-        f"- `{Path(RESIDUAL_GRAPH).stem}.png` / `.svg`: holdout absolute-residual distributions",
-        f"- `{Path(OFFSET_HISTOGRAM).stem}.png` / `.svg`: distribution of the clean observed offsets",
-        f"- `{Path(FIXED_RESIDUAL_HISTOGRAM).stem}.png` / `.svg`: one panel per fixed strategy",
-        f"- `{Path(PTS_RESIDUAL_HISTOGRAM).stem}.png` / `.svg`: one panel per PTS strategy",
+        f"- `{Path(TIMELINE_GRAPH).stem}` ({graph_suffixes}): clean and excluded offsets over camera-frame order",
+        f"- `{Path(RESIDUAL_GRAPH).stem}` ({graph_suffixes}): holdout absolute-residual distributions",
+        f"- `{Path(OFFSET_HISTOGRAM).stem}` ({graph_suffixes}): distribution of the clean observed offsets",
+        f"- `{Path(FIXED_RESIDUAL_HISTOGRAM).stem}` ({graph_suffixes}): one panel per fixed strategy",
+        f"- `{Path(PTS_RESIDUAL_HISTOGRAM).stem}` ({graph_suffixes}): one panel per PTS strategy",
         f"- `{PREDICTIONS_CSV}`: per-clean-frame predictions and train/holdout labels",
         f"- `{VERDICT_JSON}`: complete metrics, model coefficients, provenance, and machine-readable verdict",
         "",
@@ -559,7 +568,9 @@ def _markdown(report: dict) -> str:
     return "\n".join(lines)
 
 
-def analyze_output_directory(output_directory: str | Path) -> dict:
+def analyze_output_directory(
+    output_directory: str | Path, *, save_svg: bool = False
+) -> dict:
     """Analyze the two files created by the recording window and write a verdict."""
     output = Path(output_directory).expanduser().resolve()
     if not output.is_dir():
@@ -638,6 +649,15 @@ def analyze_output_directory(output_directory: str | Path) -> dict:
 
     current_all = _metrics(target, np.full(len(target), CURRENT_CORRECTION_MS))
     median_all = _metrics(target, np.full(len(target), session_median))
+    graph_files = [
+        TIMELINE_GRAPH,
+        RESIDUAL_GRAPH,
+        OFFSET_HISTOGRAM,
+        FIXED_RESIDUAL_HISTOGRAM,
+        PTS_RESIDUAL_HISTOGRAM,
+    ]
+    if save_svg:
+        graph_files.extend(str(Path(path).with_suffix(".svg")) for path in graph_files.copy())
     report = {
         "generated_at": datetime.now().astimezone().isoformat(),
         "output_directory": str(output),
@@ -685,15 +705,8 @@ def analyze_output_directory(output_directory: str | Path) -> dict:
                 "preselected strategy on a later independent recording and retain replacement/display timing exclusions."
             ),
         },
-        "output_files": [
-            VERDICT_JSON, VERDICT_MARKDOWN, PREDICTIONS_CSV, TIMELINE_GRAPH, RESIDUAL_GRAPH,
-            OFFSET_HISTOGRAM, FIXED_RESIDUAL_HISTOGRAM, PTS_RESIDUAL_HISTOGRAM,
-            str(Path(TIMELINE_GRAPH).with_suffix(".png")),
-            str(Path(RESIDUAL_GRAPH).with_suffix(".png")),
-            str(Path(OFFSET_HISTOGRAM).with_suffix(".png")),
-            str(Path(FIXED_RESIDUAL_HISTOGRAM).with_suffix(".png")),
-            str(Path(PTS_RESIDUAL_HISTOGRAM).with_suffix(".png")),
-        ],
+        "output_files": [VERDICT_JSON, VERDICT_MARKDOWN, PREDICTIONS_CSV, *graph_files],
+        "graph_formats": ["png", *(("svg",) if save_svg else ())],
         "histogram_policy": {
             "renderer": "Matplotlib",
             "layout": "One strategy per histogram panel; no overlapping distributions",
@@ -705,9 +718,17 @@ def analyze_output_directory(output_directory: str | Path) -> dict:
     }
 
     _write_predictions(output / PREDICTIONS_CSV, clean, train_count, predictions)
-    _write_timeline_graph(output / TIMELINE_GRAPH, evidence, session_median)
+    _write_timeline_graph(
+        output / TIMELINE_GRAPH, evidence, session_median, save_svg=save_svg
+    )
     _write_residual_graph(
-        output / RESIDUAL_GRAPH, target, predictions, definitions, holdout_slice, best_key
+        output / RESIDUAL_GRAPH,
+        target,
+        predictions,
+        definitions,
+        holdout_slice,
+        best_key,
+        save_svg=save_svg,
     )
     holdout_target = target[holdout_slice]
     _write_histogram(
@@ -719,6 +740,7 @@ def analyze_output_directory(output_directory: str | Path) -> dict:
             (CURRENT_CORRECTION_MS, "Current correction: 109.000 ms", "#b4465a"),
             (session_median, f"Clean median: {session_median:.3f} ms", "#8b7a2f"),
         ),
+        save_svg=save_svg,
     )
     _write_histogram(
         output / FIXED_RESIDUAL_HISTOGRAM,
@@ -730,6 +752,7 @@ def analyze_output_directory(output_directory: str | Path) -> dict:
             ("Calibrated mean", holdout_target - predictions["fixed_train_mean"][holdout_slice], "#6d7d8a"),
         ],
         symmetric_about_zero=True,
+        save_svg=save_svg,
     )
     _write_histogram(
         output / PTS_RESIDUAL_HISTOGRAM,
@@ -740,6 +763,7 @@ def analyze_output_directory(output_directory: str | Path) -> dict:
             ("Six-step PTS", holdout_target - predictions["pts_history6_linear"][holdout_slice], "#147a88"),
         ],
         symmetric_about_zero=True,
+        save_svg=save_svg,
     )
     (output / VERDICT_MARKDOWN).write_text(_markdown(report), encoding="utf-8")
     (output / VERDICT_JSON).write_text(
@@ -755,19 +779,32 @@ def main() -> None:
         type=Path,
         help=f"Folder containing {ANALYSIS_JSON} and {FRAMES_CSV}",
     )
+    parser.add_argument(
+        "--svg",
+        action="store_true",
+        help="Also save vector SVG copies of every graph (PNG is always saved)",
+    )
     arguments = parser.parse_args()
     plotting_environment = matplotlib_environment()
     current_system_only = os.environ.get("PYTHONNOUSERSITE") == "1"
     selected_system_only = plotting_environment.get("PYTHONNOUSERSITE") == "1"
     if selected_system_only != current_system_only:
+        command = [
+            sys.executable,
+            "-m",
+            "calibration.quantitative_analysis",
+            str(arguments.analysis_directory),
+        ]
+        if arguments.svg:
+            command.append("--svg")
         completed = subprocess.run(
-            [sys.executable, "-m", "calibration.quantitative_analysis", str(arguments.analysis_directory)],
+            command,
             cwd=Path(__file__).resolve().parents[1],
             env=plotting_environment,
         )
         raise SystemExit(completed.returncode)
     os.environ.setdefault("MPLCONFIGDIR", plotting_environment["MPLCONFIGDIR"])
-    report = analyze_output_directory(arguments.analysis_directory)
+    report = analyze_output_directory(arguments.analysis_directory, save_svg=arguments.svg)
     verdict = report["verdict"]
     print(verdict["operational_recommendation"])
     print(verdict["dynamic_strategy_assessment"])

@@ -102,10 +102,10 @@ class RecordingChangesTests(unittest.TestCase):
             )
 
         self.assertEqual(len(metadata), 1)
-        self.assertEqual(metadata[0]["point_cloud"], "frame_000001.pcd")
+        self.assertEqual(metadata[0]["point_cloud"], "point_cloud/frame_000001.pcd")
         self.assertEqual(metadata[0]["frame_type"], "cluster")
-        self.assertEqual(metadata[0]["camera_frame"], "camera_000001.jpg")
-        self.assertEqual(timestamps["frame_000001.pcd"], recorded_at.isoformat(timespec="microseconds"))
+        self.assertEqual(metadata[0]["camera_frame"], "images/camera_000001.jpg")
+        self.assertEqual(timestamps["point_cloud/frame_000001.pcd"], recorded_at.isoformat(timespec="microseconds"))
 
     def test_point_cloud_reader_distinguishes_cluster_schema(self):
         FakeReaderCloud.current = FakeReaderCloud(
@@ -183,7 +183,7 @@ class RecordingChangesTests(unittest.TestCase):
                 frame = np.zeros((2, 2, 3), dtype=np.uint8)
                 selected = [recorder.submit(frame) for _ in range(30)]
                 count = recorder.stop()
-                files = sorted(Path(folder).glob("camera_*.jpg"))
+                files = sorted((Path(folder) / "images").glob("camera_*.jpg"))
         finally:
             camera_module.cv.imwrite = original_imwrite
 
@@ -270,7 +270,7 @@ class RecordingChangesTests(unittest.TestCase):
         self.assertFalse(redundant_manifest_exists)
         self.assertEqual(len(journal_records), 1)
         metadata = journal_records[0]
-        self.assertEqual(metadata["frame"], "camera_000001.jpg")
+        self.assertEqual(metadata["frame"], "images/camera_000001.jpg")
         self.assertEqual(metadata["stream_epoch"], 3)
         self.assertEqual(metadata["media_unix_ns"], captured_ns)
         self.assertEqual(
@@ -340,13 +340,15 @@ class RecordingChangesTests(unittest.TestCase):
         timestamp = "2026-07-29T12:00:00+00:00"
         with TemporaryDirectory() as folder:
             root = Path(folder)
-            (root / "frame_000001.pcd").write_bytes(b"pcd")
-            (root / "camera_000001.jpg").write_bytes(b"jpg")
+            (root / "point_cloud").mkdir()
+            (root / "images").mkdir()
+            (root / "point_cloud" / "frame_000001.pcd").write_bytes(b"pcd")
+            (root / "images" / "camera_000001.jpg").write_bytes(b"jpg")
             (root / recorder_module.RECORDING_METADATA_NAME).write_text(json.dumps([{
-                "point_cloud": "frame_000001.pcd",
+                "point_cloud": "point_cloud/frame_000001.pcd",
                 "recorded_at": timestamp,
                 "frame_type": "cluster",
-                "camera_frame": "camera_000001.jpg",
+                "camera_frame": "images/camera_000001.jpg",
                 "camera_recorded_at": timestamp,
             }]))
             entries = load_recording_entries(root)
@@ -358,6 +360,50 @@ class RecordingChangesTests(unittest.TestCase):
             )
             legacy_entries = load_recording_entries(root)
             self.assertIsNone(legacy_entries[0].camera_frame)
+
+    def test_playback_loader_resolves_legacy_bare_names_in_new_subfolders(self):
+        timestamp = "2026-07-29T12:00:00+00:00"
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "point_cloud").mkdir()
+            (root / "images").mkdir()
+            (root / "point_cloud" / "frame_000001.pcd").write_bytes(b"pcd")
+            (root / "images" / "camera_000001.jpg").write_bytes(b"jpg")
+            (root / recorder_module.RECORDING_METADATA_NAME).write_text(json.dumps([{
+                "point_cloud": "frame_000001.pcd",
+                "recorded_at": timestamp,
+                "camera_frame": "camera_000001.jpg",
+                "camera_recorded_at": timestamp,
+            }]))
+
+            entries = load_recording_entries(root)
+
+        self.assertEqual(entries[0].point_cloud.name, "frame_000001.pcd")
+        self.assertEqual(entries[0].camera_frame.name, "camera_000001.jpg")
+
+    def test_playback_loader_discovers_legacy_loose_files(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "frame_000001.pcd").write_bytes(b"pcd")
+            (root / "camera_000001.jpg").write_bytes(b"jpg")
+            (root / recorder_module.TIMESTAMPS_METADATA_NAME).write_text(
+                json.dumps({"frame_000001.pcd": "2026-07-29T12:00:00+00:00"})
+            )
+
+            entries = load_recording_entries(root)
+
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0].point_cloud.name, "frame_000001.pcd")
+        self.assertEqual(entries[1].camera_frame.name, "camera_000001.jpg")
+
+    def test_gui_accepts_recording_with_nested_point_cloud_files(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "point_cloud").mkdir()
+            (root / "point_cloud" / "frame_000001.pcd").write_bytes(b"pcd")
+            (root / recorder_module.TIMESTAMPS_METADATA_NAME).write_text("{}")
+
+            self.assertTrue(application_core._is_recording_folder(root))
 
 
 class RequestedControlChangesTests(unittest.TestCase):

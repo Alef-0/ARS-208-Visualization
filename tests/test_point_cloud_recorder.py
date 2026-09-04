@@ -104,14 +104,14 @@ class PointCloudRecorderTests(unittest.TestCase):
             counts = session.stop()
 
             recording_folder = Path(paths[2])
-            frame_path = recording_folder / "frame_000001.pcd"
+            frame_path = recording_folder / "point_cloud" / "frame_000001.pcd"
             self.assertTrue(frame_path.is_file())
             timestamps = json.loads((recording_folder / "timestamps.json").read_text())
 
         self.assertEqual(counts, {2: 1})
         self.assertEqual(
             timestamps,
-            {"frame_000001.pcd": recorded_at.isoformat(timespec="microseconds")},
+            {"point_cloud/frame_000001.pcd": recorded_at.isoformat(timespec="microseconds")},
         )
         cloud, = FakePointCloud.calls
         self.assertEqual(cloud.fields, recorder_module.CLUSTER_PCD_FIELDS)
@@ -135,7 +135,7 @@ class PointCloudRecorderTests(unittest.TestCase):
                 )
             )
             counts = session.stop()
-            self.assertTrue((Path(paths[1]) / "frame_000001.pcd").is_file())
+            self.assertTrue((Path(paths[1]) / "point_cloud" / "frame_000001.pcd").is_file())
 
         self.assertEqual(counts, {1: 1})
         cloud, = FakePointCloud.calls
@@ -189,11 +189,11 @@ class PointCloudRecorderTests(unittest.TestCase):
             counts = session.stop()
 
             recording_folder = Path(paths[1])
-            self.assertTrue((recording_folder / "frame_000001.pcd").is_file())
+            self.assertTrue((recording_folder / "point_cloud" / "frame_000001.pcd").is_file())
             timestamps = json.loads((recording_folder / "timestamps.json").read_text())
 
         self.assertEqual(counts, {1: 1})
-        self.assertEqual(list(timestamps), ["frame_000001.pcd"])
+        self.assertEqual(list(timestamps), ["point_cloud/frame_000001.pcd"])
         self.assertEqual(FakePointCloud.calls[0].values.shape, (0, 10))
 
     def test_timestamp_file_exists_before_first_frame(self):

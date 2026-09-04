@@ -10,6 +10,11 @@ from typing import Callable, Iterable
 import numpy as np
 
 from sensors.radar.connection_packages import MISSING_QUALITY, RadarObject, RadarPoint
+from processing.recording.paths import (
+    POINT_CLOUD_DIRECTORY_NAME,
+    image_reference,
+    point_cloud_reference,
+)
 
 try:
     from pypcd4 import PointCloud
@@ -209,6 +214,8 @@ class PointCloudRecorder:
         self.channel = channel
         self.folder = root / f"recording_{RADAR_LETTERS[channel]}_{timestamp}"
         self.folder.mkdir(parents=True, exist_ok=False)
+        self.point_cloud_folder = self.folder / POINT_CLOUD_DIRECTORY_NAME
+        self.point_cloud_folder.mkdir()
         self.timestamps_path = self.folder / TIMESTAMPS_METADATA_NAME
         self.metadata_path = self.folder / RECORDING_METADATA_NAME
         self.progress_callback = progress_callback
@@ -256,7 +263,7 @@ class PointCloudRecorder:
         delay_seconds = self.camera_delay_seconds
         target_time = camera_time - timedelta(seconds=delay_seconds)
         snapshot = {
-            "camera_frame": Path(filename).name,
+            "camera_frame": image_reference(filename),
             "camera_recorded_at": _timestamp(camera_time),
             "target_recorded_at": _timestamp(target_time),
             "camera_delay_ms": delay_seconds * 1000.0,
@@ -322,13 +329,15 @@ class PointCloudRecorder:
                         return
                     points, recorded_at, frame_type = item
                     frame_number = self.frames_written + 1
-                    path = self.folder / f"frame_{frame_number:06d}.pcd"
+                    filename = f"frame_{frame_number:06d}.pcd"
+                    path = self.point_cloud_folder / filename
                     save_point_cloud(path, points, frame_type)
                     self.frames_written = frame_number
                     with self._metadata_lock:
-                        self._timestamps[path.name] = recorded_at
+                        reference = point_cloud_reference(filename)
+                        self._timestamps[reference] = recorded_at
                         self._records.append({
-                            "point_cloud": path.name,
+                            "point_cloud": reference,
                             "recorded_at": recorded_at,
                             "frame_type": frame_type,
                             "camera_frame": None,

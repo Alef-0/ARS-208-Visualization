@@ -12,6 +12,11 @@ from processing.visualization.graph_draw import Graph_radar
 from processing.visualization.graph_filter import Filter_graph
 from processing.recording.point_cloud_reader import PointCloudReader
 from processing.recording.point_cloud_recorder import RECORDING_METADATA_NAME, TIMESTAMPS_METADATA_NAME
+from processing.recording.paths import (
+    IMAGE_DIRECTORY_NAME,
+    POINT_CLOUD_DIRECTORY_NAME,
+    resolve_recording_file,
+)
 
 DEFAULT_PLAYBACK_WIDTH = 1280
 DEFAULT_PLAYBACK_HEIGHT = 720
@@ -26,11 +31,8 @@ class PlaybackEntry:
     camera_recorded_at: datetime | None = None
 
 
-def _path_if_file(root: Path, filename) -> Path | None:
-    if not filename:
-        return None
-    path = root / str(filename)
-    return path if path.is_file() else None
+def _path_if_file(root: Path, filename, directory_name: str) -> Path | None:
+    return resolve_recording_file(root, filename, directory_name)
 
 
 def _file_time(path: Path) -> datetime:
@@ -44,7 +46,7 @@ def _parse_time(value, fallback: Path) -> datetime:
 
 
 def load_recording_entries(folder: str | Path) -> tuple[PlaybackEntry, ...]:
-    root = Path(folder).expanduser()
+    root = Path(folder).expanduser().resolve()
     if not root.is_dir():
         raise ValueError("The playback source must be an existing recording folder")
 
@@ -70,13 +72,13 @@ def load_recording_entries(folder: str | Path) -> tuple[PlaybackEntry, ...]:
                 continue
             point_name = item.get("point_cloud")
             camera_name = item.get("camera_frame")
-            if point_name:
-                referenced_point_clouds.add(Path(str(point_name)).name)
-            if camera_name:
-                referenced_camera_frames.add(Path(str(camera_name)).name)
 
-            point_cloud = _path_if_file(root, point_name)
-            camera_frame = _path_if_file(root, camera_name)
+            point_cloud = _path_if_file(root, point_name, POINT_CLOUD_DIRECTORY_NAME)
+            camera_frame = _path_if_file(root, camera_name, IMAGE_DIRECTORY_NAME)
+            if point_cloud is not None:
+                referenced_point_clouds.add(point_cloud)
+            if camera_frame is not None:
+                referenced_camera_frames.add(camera_frame)
             if point_cloud is None and camera_frame is None:
                 continue
 
@@ -103,36 +105,35 @@ def load_recording_entries(folder: str | Path) -> tuple[PlaybackEntry, ...]:
             ))
 
     for filename, recorded_at in timestamps.items():
-        name = Path(str(filename)).name
-        if name in referenced_point_clouds:
-            continue
-        point_cloud = _path_if_file(root, filename)
+        point_cloud = _path_if_file(root, filename, POINT_CLOUD_DIRECTORY_NAME)
         if point_cloud is None:
             continue
-        referenced_point_clouds.add(name)
+        if point_cloud in referenced_point_clouds:
+            continue
+        referenced_point_clouds.add(point_cloud)
         entries.append(PlaybackEntry(
             point_cloud=point_cloud,
             recorded_at=_parse_time(recorded_at, point_cloud),
         ))
 
-    for point_cloud in root.glob("*.pcd"):
-        if point_cloud.name in referenced_point_clouds:
+    for point_cloud in root.rglob("*.pcd"):
+        if point_cloud in referenced_point_clouds:
             continue
-        referenced_point_clouds.add(point_cloud.name)
+        referenced_point_clouds.add(point_cloud)
         entries.append(PlaybackEntry(
             point_cloud=point_cloud,
             recorded_at=_parse_time(timestamps.get(point_cloud.name), point_cloud),
         ))
 
-    for camera_frame in root.iterdir():
+    for camera_frame in root.rglob("*"):
         if (
             not camera_frame.is_file()
             or not camera_frame.name.lower().startswith("camera_")
             or camera_frame.suffix.lower() not in _CAMERA_SUFFIXES
-            or camera_frame.name in referenced_camera_frames
+            or camera_frame in referenced_camera_frames
         ):
             continue
-        referenced_camera_frames.add(camera_frame.name)
+        referenced_camera_frames.add(camera_frame)
         camera_time = _file_time(camera_frame)
         entries.append(PlaybackEntry(
             point_cloud=None,

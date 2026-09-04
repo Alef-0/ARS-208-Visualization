@@ -142,16 +142,21 @@ Starting a recording creates one folder per selected radar group:
 
 ```text
 recording_A_YYYYMMDD_HHMMSS_microseconds/
-├── frame_000001.pcd
-├── camera_000001.jpg
+├── images/
+│   └── camera_000001.jpg
+├── point_cloud/
+│   └── frame_000001.pcd
 ├── recording.json
 └── timestamps.json
 ```
 
-Radar frames are written as PCD point clouds. Camera frames are written as
-JPEGs into every selected group folder. `recording.json` is the authoritative
-ordered association between radar frames and camera frames; `timestamps.json`
-keeps the older filename-to-radar-time mapping.
+Radar frames are written as PCD point clouds inside `point_cloud/`. Camera
+frames are written as JPEGs inside `images/` in every selected group folder.
+`recording.json` is the authoritative ordered association between radar frames
+and camera frames; `timestamps.json` keeps the older filename-to-radar-time
+mapping. The loader also accepts older JSON that refers to loose root-level
+files, and can resolve those bare references if the files were moved into the
+new subfolders.
 
 For each camera frame, the recorder subtracts the configured camera delay and
 matches the result to the closest still-unpaired radar frame. The metadata
@@ -197,7 +202,7 @@ The **Create analysis files** button only writes `calibration_analysis.json`
 and `calibration_frames.csv` to a sibling
 `<recording-folder-name>_analysis` directory. After the inspection window is
 closed, the root launcher reads those files and writes a quantitative verdict,
-per-frame strategy predictions, and five Matplotlib graphs as both PNG and SVG.
+per-frame strategy predictions, and five Matplotlib graphs as PNG files.
 The histogram figures use one strategy per panel with compact, independently
 adjusted bins and ranges.
 
@@ -209,6 +214,10 @@ python3 analyze_calibration_recording.py /path/to/calibration-recording \
 # Recreate only the verdict from existing analysis files (no window)
 python3 -m calibration.quantitative_analysis \
   /path/to/calibration-recording_analysis
+
+# Also save SVG copies when running the quantitative analyzer directly
+python3 -m calibration.quantitative_analysis \
+  /path/to/calibration-recording_analysis --svg
 ```
 
 For each decoded QR, the analyzer verifies the recorded quadrant and checks both

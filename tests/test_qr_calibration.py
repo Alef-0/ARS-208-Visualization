@@ -110,15 +110,18 @@ class QRHelpersTests(unittest.TestCase):
 
 
 class RecordingTests(unittest.TestCase):
-    def fixture(self, folder: Path, count=5):
+    def fixture(self, folder: Path, count=5, legacy=False):
         rows = display_rows(count)
         (folder / "display_timestamps.jsonl").write_text(
             "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
         )
         frame = np.zeros((100, 100, 3), np.uint8)
-        cv2.imwrite(str(folder / "camera_000001.jpg"), frame)
+        image_folder = folder if legacy else folder / "images"
+        image_folder.mkdir(exist_ok=True)
+        image_name = "camera_000001.jpg" if legacy else "images/camera_000001.jpg"
+        cv2.imwrite(str(folder / image_name), frame)
         (folder / "camera_timestamps.jsonl").write_text(json.dumps({
-            "frame": "camera_000001.jpg", "stream_epoch": 1,
+            "frame": image_name, "stream_epoch": 1,
             "pts_ns": 100_000_000, "reference_ntp_ns": 1_700_000_000_000_000_000,
         }) + "\n", encoding="utf-8")
         (folder / "camera_timing_session.json").write_text(json.dumps({
@@ -214,9 +217,21 @@ class RecordingTests(unittest.TestCase):
             self.assertEqual(loaded["frames"][0]["validation"], "accepted_unknown")
             self.assertIn("qr_top_left_ms", csv_path.read_text(encoding="utf-8"))
 
+    def test_legacy_calibration_journal_and_loose_image_remain_readable(self):
+        with TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            self.fixture(folder, legacy=True)
+            model = RecordingAnalyzer(
+                folder,
+                DEFAULT_INTRINSICS,
+                reader=FakeReader([], []),
+            )
+
+        self.assertEqual(model.rows[0]["filename"], "camera_000001.jpg")
+
 
 class QuantitativeVerdictTests(unittest.TestCase):
-    def test_saved_analysis_produces_verdict_metrics_and_svg_graphs(self):
+    def test_saved_analysis_defaults_to_png_and_optionally_saves_svg_graphs(self):
         with TemporaryDirectory() as temporary:
             output = Path(temporary)
             frames = []
@@ -250,9 +265,10 @@ class QuantitativeVerdictTests(unittest.TestCase):
                 writer.writeheader()
                 writer.writerows(frames)
 
-            def graph_file(path, *_args, **_kwargs):
-                path.write_text("<svg/>", encoding="utf-8")
-                path.with_suffix(".png").write_bytes(b"PNG")
+            def graph_file(path, *_args, save_svg=False, **_kwargs):
+                path.write_bytes(b"PNG")
+                if save_svg:
+                    path.with_suffix(".svg").write_text("<svg/>", encoding="utf-8")
 
             with (
                 patch("calibration.quantitative_analysis._write_timeline_graph", side_effect=graph_file),
@@ -268,14 +284,45 @@ class QuantitativeVerdictTests(unittest.TestCase):
                 report["verdict"]["current_correction_ms"],
             )
             self.assertTrue((output / "calibration_verdict.md").is_file())
-            self.assertIn("<svg", (output / "calibration_offset_timeline.svg").read_text())
-            for filename in (
-                "calibration_offset_histogram.svg",
-                "calibration_fixed_residual_histogram.svg",
-                "calibration_pts_residual_histogram.svg",
+            self.assertEqual(report["graph_formats"], ["png"])
+            graph_stems = (
+                "calibration_offset_timeline",
+                "calibration_residual_cdf",
+                "calibration_offset_histogram",
+                "calibration_fixed_residual_histogram",
+                "calibration_pts_residual_histogram",
+            )
+            for stem in graph_stems:
+                self.assertTrue((output / f"{stem}.png").is_file())
+                self.assertFalse((output / f"{stem}.svg").exists())
+                self.assertNotIn(f"{stem}.svg", report["output_files"])
+
+            with (
+                patch("calibration.quantitative_analysis._write_timeline_graph", side_effect=graph_file),
+                patch("calibration.quantitative_analysis._write_residual_graph", side_effect=graph_file),
+                patch("calibration.quantitative_analysis._write_histogram", side_effect=graph_file),
             ):
+                svg_report = analyze_output_directory(output, save_svg=True)
+
+            self.assertEqual(svg_report["graph_formats"], ["png", "svg"])
+            for stem in graph_stems:
+                filename = f"{stem}.svg"
                 self.assertIn("<svg", (output / filename).read_text())
-                self.assertTrue((output / Path(filename).with_suffix(".png")).is_file())
+                self.assertIn(filename, svg_report["output_files"])
+
+    def test_root_launcher_does_not_request_svg_graphs(self):
+        with TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            (output / "calibration_verdict.json").write_text(
+                json.dumps({"output_directory": str(output)}), encoding="utf-8"
+            )
+            with (
+                patch.object(recording_launcher, "matplotlib_environment", return_value={}),
+                patch.object(recording_launcher.subprocess, "run") as run,
+            ):
+                recording_launcher._run_quantitative_analysis(output)
+            command = run.call_args.args[0]
+            self.assertNotIn("--svg", command)
 
     def test_root_launcher_runs_saved_data_verdict_after_the_window(self):
         recording = Path("/recordings/sample")

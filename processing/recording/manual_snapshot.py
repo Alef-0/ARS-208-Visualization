@@ -11,6 +11,12 @@ from processing.recording.point_cloud_recorder import (
     TIMESTAMPS_METADATA_NAME,
     save_point_cloud,
 )
+from processing.recording.paths import (
+    image_path,
+    image_reference,
+    point_cloud_path,
+    point_cloud_reference,
+)
 
 # Older snapshot folders may contain this file. It is ignored and never created.
 _LEGACY_GROUP_METADATA_NAME = "group.json"
@@ -81,13 +87,15 @@ class ManualSnapshotWriter:
 
     def _next_index(self, records: list[dict]) -> int:
         indexes = []
-        for path in self.folder.iterdir():
+        for path in self.folder.rglob("*"):
+            if not path.is_file():
+                continue
             match = _INDEX_PATTERN.match(path.name)
             if match:
                 indexes.append(int(match.group(1)))
         for record in records:
             for key in ("point_cloud", "camera_frame"):
-                match = _INDEX_PATTERN.match(str(record.get(key, "")))
+                match = _INDEX_PATTERN.match(Path(str(record.get(key, ""))).name)
                 if match:
                     indexes.append(int(match.group(1)))
         return max(indexes, default=0) + 1
@@ -102,10 +110,10 @@ class ManualSnapshotWriter:
     ) -> dict:
         records, timestamps = self._load_or_initialize()
         index = self._next_index(records)
-        point_cloud_name = f"frame_{index:06d}.pcd"
-        camera_name = f"camera_{index:06d}.jpg"
-        point_cloud_path = self.folder / point_cloud_name
-        camera_path = self.folder / camera_name
+        point_cloud_name = point_cloud_reference(f"frame_{index:06d}.pcd")
+        camera_name = image_reference(f"camera_{index:06d}.jpg")
+        point_cloud_file = point_cloud_path(self.folder, point_cloud_name)
+        camera_file = image_path(self.folder, camera_name)
         target_radar_time = camera_recorded_at - timedelta(
             seconds=self.camera_delay_seconds
         )
@@ -115,10 +123,12 @@ class ManualSnapshotWriter:
 
         created = []
         try:
-            save_point_cloud(point_cloud_path, tuple(points), frame_type)
-            created.append(point_cloud_path)
-            camera_path.write_bytes(image_bytes)
-            created.append(camera_path)
+            point_cloud_file.parent.mkdir(exist_ok=True)
+            camera_file.parent.mkdir(exist_ok=True)
+            save_point_cloud(point_cloud_file, tuple(points), frame_type)
+            created.append(point_cloud_file)
+            camera_file.write_bytes(image_bytes)
+            created.append(camera_file)
 
             radar_timestamp = radar_recorded_at.isoformat(timespec="microseconds")
             camera_timestamp = camera_recorded_at.isoformat(timespec="microseconds")

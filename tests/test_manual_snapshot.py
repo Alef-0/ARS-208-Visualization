@@ -71,12 +71,12 @@ class ManualSnapshotTests(unittest.TestCase):
             )
             group_exists = (root / "group.json").exists()
 
-        self.assertEqual(first["point_cloud"], "frame_000001.pcd")
-        self.assertEqual(second["point_cloud"], "frame_000002.pcd")
+        self.assertEqual(first["point_cloud"], "point_cloud/frame_000001.pcd")
+        self.assertEqual(second["point_cloud"], "point_cloud/frame_000002.pcd")
         self.assertFalse(group_exists)
         self.assertEqual(len(records), 2)
         self.assertEqual(len(timestamps), 2)
-        self.assertEqual(records[0]["camera_frame"], "camera_000001.jpg")
+        self.assertEqual(records[0]["camera_frame"], "images/camera_000001.jpg")
         self.assertEqual(records[0]["synchronization_error_ms"], 0.0)
         self.assertNotIn("group", first)
         self.assertNotIn("channel", first)
@@ -101,8 +101,8 @@ class ManualSnapshotTests(unittest.TestCase):
             )
 
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0]["point_cloud"], "frame_000001.pcd")
-        self.assertEqual(records[0]["camera_frame"], "camera_000001.jpg")
+        self.assertEqual(records[0]["point_cloud"], "point_cloud/frame_000001.pcd")
+        self.assertEqual(records[0]["camera_frame"], "images/camera_000001.jpg")
 
     def test_legacy_group_metadata_is_ignored(self):
         recorded_at = datetime.now(timezone.utc)
@@ -121,7 +121,7 @@ class ManualSnapshotTests(unittest.TestCase):
                 ),
             )
 
-        self.assertEqual(result["point_cloud"], "frame_000001.pcd")
+        self.assertEqual(result["point_cloud"], "point_cloud/frame_000001.pcd")
 
     def test_recording_pairs_camera_to_the_configured_earlier_radar_frame(self):
         first_time = datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc)
@@ -142,7 +142,7 @@ class ManualSnapshotTests(unittest.TestCase):
                 ).read_text()
             )
 
-        self.assertEqual(records[0]["camera_frame"], "camera_000001.jpg")
+        self.assertEqual(records[0]["camera_frame"], "images/camera_000001.jpg")
         self.assertIsNone(records[1]["camera_frame"])
         self.assertEqual(records[0]["camera_delay_ms"], 109)
         self.assertEqual(records[0]["synchronization_error_ms"], 0.0)

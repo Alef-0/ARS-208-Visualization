@@ -27,6 +27,7 @@ from calibration.qr import (
     order_by_quadrant,
     timestamp_payload,
 )
+from processing.recording.paths import IMAGE_DIRECTORY_NAME, resolve_recording_file
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -211,8 +212,8 @@ class RecordingAnalyzer:
             filename = row.get("frame") or row.get("camera_frame")
             if not isinstance(filename, str) or not filename or filename in seen:
                 raise ValueError("Camera journal contains missing or duplicate frame names")
-            path = (self.folder / filename).resolve()
-            if not path.is_relative_to(self.folder) or not path.is_file():
+            path = resolve_recording_file(self.folder, filename, IMAGE_DIRECTORY_NAME)
+            if path is None:
                 raise ValueError("Missing image or image outside recording folder: " + filename)
             seen.add(filename)
             self.rows.append({**row, "filename": filename})
@@ -339,7 +340,12 @@ class RecordingAnalyzer:
         if key in self.cache:
             return self.cache[key]
         row = self.rows[index]
-        original = cv2.imread(str(self.folder / row["filename"]))
+        image_path = resolve_recording_file(
+            self.folder, row["filename"], IMAGE_DIRECTORY_NAME
+        )
+        if image_path is None:
+            raise ValueError("Missing image or image outside recording folder: " + row["filename"])
+        original = cv2.imread(str(image_path))
         if original is None:
             raise ValueError("Could not read " + row["filename"])
         undistorted = self.undistorter.image(original, alpha)

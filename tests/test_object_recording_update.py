@@ -141,7 +141,7 @@ class ObjectRecordingUpdateTests(unittest.TestCase):
             )
 
         self.assertEqual(records[0]["frame_type"], "object")
-        self.assertEqual(records[0]["camera_frame"], "camera_000001.jpg")
+        self.assertEqual(records[0]["camera_frame"], "images/camera_000001.jpg")
 
     def test_reader_restores_extended_object_fields(self):
         import numpy as np

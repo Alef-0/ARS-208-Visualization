@@ -11,6 +11,7 @@ workers that create, read, and copy paired observations.
   calibration timing evidence.
 - `point_cloud_reader.py` restores supported PCD schemas as typed radar points.
 - `manual_snapshot.py` appends one radar/image pair to a compatible folder.
+- `paths.py` defines the current data directories and legacy JSON path lookup.
 - `__init__.py` exports the main recorder, reader, and snapshot classes.
 
 ## Normal recording folders
@@ -20,8 +21,8 @@ Each selected radar group gets its own folder named
 
 | File | Meaning |
 | --- | --- |
-| `frame_NNNNNN.pcd` | One complete cluster or object radar frame |
-| `camera_NNNNNN.jpg` | One camera frame; its number follows the camera sequence |
+| `point_cloud/frame_NNNNNN.pcd` | One complete cluster or object radar frame |
+| `images/camera_NNNNNN.jpg` | One camera frame; its number follows the camera sequence |
 | `recording.json` | Ordered radar records plus optional paired camera fields |
 | `timestamps.json` | Compatibility mapping from PCD filename to radar time |
 
@@ -29,10 +30,10 @@ Each selected radar group gets its own folder named
 
 ```json
 {
-  "point_cloud": "frame_000001.pcd",
+  "point_cloud": "point_cloud/frame_000001.pcd",
   "recorded_at": "ISO-8601 radar time",
   "frame_type": "cluster or object",
-  "camera_frame": "camera_000001.jpg or null",
+  "camera_frame": "images/camera_000001.jpg or null",
   "camera_recorded_at": "ISO-8601 camera time or null",
   "camera_delay_ms": 109.0,
   "synchronization_error_ms": 0.0
@@ -103,8 +104,10 @@ rejects the snapshot.
 
 `load_recording_entries()` prefers `recording.json`, supplements it from
 `timestamps.json`, and finally discovers unreferenced PCD and `camera_*` image
-files. Missing files are skipped, and file modification time is the fallback
-when metadata has no timestamp. Entries are sorted by effective recorded time.
+files. It resolves both current paths such as `point_cloud/frame_000001.pcd`
+and legacy bare names such as `frame_000001.pcd`; missing files are skipped,
+and file modification time is the fallback when metadata has no timestamp.
+Entries are sorted by effective recorded time.
 
 Normal playback follows the original intervals, draws any PCD frame, displays
 any image, and supports restart or five-second seeks. Mixed and single-modality
@@ -116,7 +119,7 @@ currently displayed pair to a snapshot destination.
 
 ## Calibration-only files
 
-A channel-4 calibration folder contains JPEGs plus:
+A channel-4 calibration folder contains an `images/` directory with JPEGs plus:
 
 | File | Purpose |
 | --- | --- |
@@ -127,7 +130,8 @@ A channel-4 calibration folder contains JPEGs plus:
 | `display_timestamps.jsonl` | Display geometry and per-marker sample/submission/flip timing, including warm-up |
 
 The JSONL journal is the single canonical frame manifest. A compact row stores
-the image name, stream epoch, PTS, running time, host receipt clocks, raw and
+the image path (new recordings use `images/camera_*.jpg`; legacy bare names are
+also accepted), stream epoch, PTS, running time, host receipt clocks, raw and
 interpreted reference timestamp, host-anchored media time, adjusted exposure
 estimate, save time, and flags. Repeated values such as decoder choice,
 pipeline latency, the 109 ms adjustment, and pipeline-zero anchors live in the
@@ -158,6 +162,8 @@ internal gap or reordered display frame.
 
 - Keep `recording.json` and `timestamps.json` readable together; manual
   snapshots and both playback modes depend on them.
+- New JSON references use `point_cloud/` and `images/`; readers also accept
+  legacy root-level references and root-level files.
 - Keep support for cluster, legacy-object, and current-object PCD schemas unless
   old recordings are intentionally retired.
 - Do not treat the numeric suffixes of `frame_*.pcd` and `camera_*.jpg` as proof

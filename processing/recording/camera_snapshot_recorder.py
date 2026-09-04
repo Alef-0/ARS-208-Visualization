@@ -15,6 +15,11 @@ from processing.recording.camera_telemetry import (
     CAMERA_TIMING_SESSION_NAME,
     CameraTelemetryWriter,
 )
+from processing.recording.paths import (
+    IMAGE_DIRECTORY_NAME,
+    image_path,
+    image_reference,
+)
 
 
 CAMERA_FRAME_RATE = 30
@@ -70,6 +75,7 @@ class CameraSnapshotRecorder:
         for folder in selected.values():
             if not folder.is_dir():
                 raise ValueError(f"Recording folder does not exist: {folder}")
+            (folder / IMAGE_DIRECTORY_NAME).mkdir(exist_ok=True)
 
         self._folders = selected
         self._queue = queue.Queue(maxsize=self.queue_size)
@@ -238,16 +244,17 @@ class CameraSnapshotRecorder:
                     frame, captured_at, timing = item
                     frame_number = self._frame_number + 1
                     filename = f"camera_{frame_number:06d}.jpg"
+                    reference = image_reference(filename)
                     files = {}
                     for channel, folder in self._folders.items():
-                        path = folder / filename
+                        path = image_path(folder, filename)
                         if not cv.imwrite(str(path), frame):
                             raise RuntimeError(f"Could not save camera snapshot: {path}")
-                        files[channel] = filename
+                        files[channel] = reference
                     self._frame_number = frame_number
                     saved_at_ns = time.time_ns()
                     self._record_calibration_timestamp(
-                        filename,
+                        reference,
                         captured_at,
                         timing,
                         saved_at_ns,

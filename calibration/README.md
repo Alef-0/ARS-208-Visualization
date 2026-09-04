@@ -22,8 +22,8 @@ alignment.
   the displayed sequence and its following replacement, and labels suspect or
   unknown timing evidence. The default undistortion alpha is `0.25`.
 - `quantitative_analysis.py` compares correction strategies on clean evidence,
-  writes the verdict, and creates all graphs with Matplotlib in both PNG and SVG
-  formats.
+  writes the verdict, and creates all graphs with Matplotlib. PNG is the default;
+  vector SVG copies are optional.
 - `intrinsics.json` contains the default camera matrix, distortion coefficients,
   and calibration image size used for undistortion.
 - `../analyze_calibration_recording.py` is the normal entry point. It opens the
@@ -64,6 +64,16 @@ To regenerate only the verdict and graphs from existing analysis files:
 ```bash
 python3 -m calibration.quantitative_analysis /path/to/recording_analysis
 ```
+
+Add `--svg` when running this standalone command to also create vector copies:
+
+```bash
+python3 -m calibration.quantitative_analysis \
+  /path/to/recording_analysis --svg
+```
+
+The application and `analyze_calibration_recording.py` intentionally use the
+PNG-only default.
 
 The QR display can also be started directly:
 
@@ -136,16 +146,17 @@ The quantitative analyzer then creates:
   histogram policy, and machine-readable verdict;
 - `calibration_strategy_predictions.csv` — observed offsets, split labels, and
   every strategy prediction for each clean frame;
-- `calibration_offset_timeline.png` and `.svg` — clean and excluded offsets over
-  frame order;
-- `calibration_residual_cdf.png` and `.svg` — absolute-residual distributions on
-  the chronological holdout;
-- `calibration_offset_histogram.png` and `.svg` — the clean observed-offset
-  distribution;
-- `calibration_fixed_residual_histogram.png` and `.svg` — one panel per fixed
-  strategy;
-- `calibration_pts_residual_histogram.png` and `.svg` — one panel per PTS-based
-  strategy.
+- `calibration_offset_timeline.png` — clean and excluded offsets over frame
+  order;
+- `calibration_residual_cdf.png` — absolute-residual distributions on the
+  chronological holdout;
+- `calibration_offset_histogram.png` — the clean observed-offset distribution;
+- `calibration_fixed_residual_histogram.png` — one panel per fixed strategy;
+- `calibration_pts_residual_histogram.png` — one panel per PTS-based strategy.
+
+With `--svg`, the quantitative analyzer also creates an `.svg` copy beside each
+PNG. Existing SVG files from an earlier run are not deleted when the analyzer is
+later run without the flag.
 
 Histogram panels never overlap strategies. Each panel uses the full range of
 its own data and Freedman-Diaconis bin spacing constrained to 8–18 succinct
