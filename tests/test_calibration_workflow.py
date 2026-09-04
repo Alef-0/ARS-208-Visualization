@@ -32,7 +32,7 @@ class CalibrationWorkflowTests(unittest.TestCase):
             self.assertTrue(destination.is_dir())
             arguments = runtime.process_context.Process.call_args.kwargs
             self.assertEqual(arguments["kwargs"]["journal_path"], str(destination / "display_timestamps.jsonl"))
-            self.assertEqual(arguments["kwargs"]["visible_frames"], 3)
+            self.assertNotIn("visible_frames", arguments["kwargs"])
             main._service_calibration(config, runtime, camera)
             camera.send.assert_not_called()
             with patch.object(main.time, "monotonic", return_value=103):
@@ -68,21 +68,7 @@ class CalibrationWorkflowTests(unittest.TestCase):
         self.assertIsNone(runtime.calibration_recording_deadline)
         config.show_calibration_error.assert_called_once()
 
-    def test_visible_frame_count_is_forwarded_and_invalid_values_do_not_start(self):
-        for count in range(1, 5):
-            with self.subTest(count=count):
-                config, runtime, process = self.fixture()
-                config.calibration_camera = False
-                main._start_calibration_clock({"calibration_visible_frames": str(count)}, config, runtime)
-                self.assertEqual(runtime.process_context.Process.call_args.kwargs["kwargs"]["visible_frames"], count)
-        for count in ("0", "5", "1.5", "invalid"):
-            with self.subTest(count=count):
-                config, runtime, process = self.fixture()
-                main._start_calibration_clock({"calibration_visible_frames": count}, config, runtime)
-                runtime.process_context.Process.assert_not_called()
-                config.show_calibration_error.assert_called_once()
-
-    def test_visible_barcode_control_defaults_to_three(self):
+    def test_calibration_layout_has_fixed_qr_mode_without_amount_control(self):
         def elements(rows):
             for row in rows:
                 for element in row:
@@ -90,10 +76,24 @@ class CalibrationWorkflowTests(unittest.TestCase):
                     nested = getattr(element, "Rows", None)
                     if nested:
                         yield from elements(nested)
-        control = next(element for element in elements(main.Configurations._create_calibration_layout())
-                       if getattr(element, "Key", None) == "calibration_visible_frames")
-        self.assertEqual(tuple(control.Values), (1, 2, 3, 4))
-        self.assertEqual(control.DefaultValue, 3)
+        controls = list(elements(main.Configurations._create_calibration_layout()))
+        self.assertFalse(any(getattr(element, "Key", None) == "calibration_visible_frames"
+                             for element in controls))
+        button = next(element for element in controls
+                      if getattr(element, "Key", None) == "calibration_clock_start")
+        self.assertEqual(button.ButtonText, "START QR CALIBRATION")
+
+    def test_visualization_launches_single_analyzer_with_only_the_folder(self):
+        with TemporaryDirectory(prefix="qr calibration ") as folder:
+            path = Path(folder)
+            (path / "camera_timestamps.jsonl").write_text("{}\n")
+            runtime = main.RuntimeState()
+            config = SimpleNamespace(window={"visualization_open": Mock(), "visualization_status": Mock()})
+            with patch.object(main.subprocess, "Popen") as launch:
+                main._start_calibration_visualization({"visualization_folder": folder}, config, runtime)
+            command = launch.call_args.args[0]
+            self.assertEqual(Path(command[1]).name, "analyze_calibration_recording.py")
+            self.assertEqual(command[2:], [str(path.resolve())])
 
 
 if __name__ == "__main__":

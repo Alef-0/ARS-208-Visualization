@@ -20,16 +20,11 @@ plugins from affecting this project.
 | `test_graph_filter.py` | Dynamic, quality, ambiguity, invalid-state, and RCS filtering |
 | `test_point_cloud_recorder.py` | Cluster/object PCD schemas, writer behavior, and recording sessions |
 | `test_recording_changes.py` | Camera/radar pairing, metadata, frame-rate selection, calibration journals, and playback loading |
-| `test_calibration_clock.py` | Persistent canvas/underline pixels, optimized EAN equivalence, deadline pacing, P pause/resume, display journals and timing-event attribution |
-| `test_calibration_marker_analysis.py` | Synthetic perspective registration, direct/inferred marker selection, delayed replacements, unverified final markers, timing diagnostics, pause exclusions and raster ambiguity rejection |
 | `test_calibration_workflow.py` | Fake-process display startup, recording destinations, delayed capture and cancellation |
-| `test_calibration_visualization.py` | Offline candidate selection, future-read rejection, marker sources, coordinate mapping, stream separation, partial scans and standalone GUI launch |
-| `test_calibration_manual_regions.py` | Manual panel validation, recording/intrinsic binding, alpha remapping, undistortion padding, regular analysis and viewer integration |
-| `test_calibration_regions.py` | OpenCV contrast/binary retries, learned panel geometry, movement resets, merged detections and conflicting generations |
+| `test_qr_calibration.py` | QR generation, two-quadrant display, QReader sector ordering, four-value stop rules, journal matching, replacement timing, mismatch reporting, and quantitative verdict artifacts |
 | `test_manual_snapshot.py` | Snapshot folder validation, indexes, metadata, and cleanup after failure |
 | `test_snapshot_playback.py` | Paired-entry filtering, stepping, rendering controls, and copy-current-pair behavior |
 | `test_camera_pipeline_policy.py` | Decoder choice, pipeline structure, host-anchored PTS, reference clocks, transport counters, and capture callbacks |
-| `test_camera_timing_analysis.py` | Calibration barcode helpers, compact/legacy time normalization, and distribution summaries |
 
 ## What the suite does not prove
 
@@ -42,7 +37,7 @@ Passing tests do not establish:
 - actual GStreamer plugin or hardware-decoder availability;
 - the negotiated RTSP transport or real packet loss;
 - sustained 30 FPS capture and JPEG writing;
-- fullscreen calibration appearance or barcode readability through the camera;
+- fullscreen calibration appearance or QR readability through the camera;
 - the correctness of the operational camera-delay value for a new session;
 - clean interaction among the real FreeSimpleGUI, OpenCV, GTK, and Pygame
   windows.

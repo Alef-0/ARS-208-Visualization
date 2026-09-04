@@ -1,10 +1,13 @@
 FreeSimpleGUI
 Pillow
 bitstring
+matplotlib
 numpy
 opencv-python
 pypcd4
 PyGObject
 pygame
+qrcode
+qreader
 requests
 urllib3

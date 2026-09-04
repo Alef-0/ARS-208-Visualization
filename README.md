@@ -26,7 +26,7 @@ and should be confirmed on the real Segcom installation.
 - Play complete recordings at their recorded cadence, or inspect paired
   snapshots one frame at a time.
 - Poll the DVR GPS endpoint and open the last position in Google Maps.
-- Record camera channel 4 while displaying monotonic EAN-13 markers for
+- Record camera channel 4 while displaying monotonic QR markers for
   latency and clock-drift analysis.
 - Convert recorded PCD trees to CSV while preserving images and metadata.
 
@@ -181,31 +181,43 @@ pair into another snapshot folder.
 ## Calibration
 
 The Calibration tab records camera channel 4 while one persistent fullscreen
-canvas presents clockwise EAN-13 timestamps. Three panels remain visible by
-default; an underline below the time identifies the newest marker. Press **P**
-to pause/resume the display. Paused markers are excluded from timing analysis.
+canvas presents clockwise QR timestamps, two quadrants at a time. An underline
+below the time identifies the newest marker. Press **P** to pause/resume the
+display. Paused markers are excluded from timing analysis.
 
-Use the Visualization tab or the standalone viewer to mark the four corners
-of each panel on an undistorted middle frame. OpenCV then reads those fixed
-regions, with local contrast enabled and binary retry optional. Saved geometry
-is specific to the recording; alpha changes remap its coordinates consistently.
+The Visualization tab opens the single analyzer with the project's copied
+camera intrinsics, an undistorted image, and alpha 0.25 by default. QReader
+detects every QR bounding box, retries any missing quadrant separately, and
+orders the results by quadrant. Analysis starts immediately, skips frames that
+still have a missing quadrant, and advances until four decoded QR values no
+longer form one consecutive clockwise sequence. The PTS,
+NTP and four QR values are editable in the viewer; applying a valid correction
+restarts the scan using the corrected values without changing the recording.
+The **Create analysis files** button only writes `calibration_analysis.json`
+and `calibration_frames.csv` to a sibling
+`<recording-folder-name>_analysis` directory. After the inspection window is
+closed, the root launcher reads those files and writes a quantitative verdict,
+per-frame strategy predictions, and five Matplotlib graphs as both PNG and SVG.
+The histogram figures use one strategy per panel with compact, independently
+adjusted bins and ranges.
 
 ```bash
-python3 visualize_calibration_recording.py /path/to/calibration-recording
-python3 analyze_calibration_recording_offset.py /path/to/calibration-recording \
-  --output-dir /path/to/analysis
+python3 analyze_calibration_recording.py /path/to/calibration-recording
+python3 analyze_calibration_recording.py /path/to/calibration-recording \
+  --intrinsics /path/to/intrinsics.json
+
+# Recreate only the verdict from existing analysis files (no window)
+python3 -m calibration.quantitative_analysis \
+  /path/to/calibration-recording_analysis
 ```
 
-The analyzer retains per-frame evidence and excludes overlapping generations,
-ambiguous current indicators, unexpected blank-area content, and suspect or
-unverified display replacements. Readable codes alone do not establish exposure
-time. The configured 109 ms camera correction remains provisional and unchanged.
-
-See the [calibration guide](calibration/README.md) for the package map, display
-and marking controls, analysis commands and dated findings. The
-[inspection guide](calibration/inspection/README.md) explains the viewer's
-navigation, image variants, timing fields and cancellable scans. Generated
-recordings and reports stay local under `recordings/`.
+For each decoded QR, the analyzer verifies the recorded quadrant and checks both
+its own flip timing and the following replacement. Suspect or missing replacement
+evidence stays visible but is excluded from the clean offset summary. The verdict
+compares 109 ms, calibrated fixed corrections, PTS-step groups, and a six-step
+causal PTS-history model on a chronological 70/30 split. A learned model remains
+experimental until the preselected strategy is confirmed on a later independent
+recording. Readable codes alone do not establish physical exposure time.
 
 ## CSV conversion
 
@@ -248,7 +260,8 @@ See `tests/README.md` for the test-area map.
 | `interface_core.py` | Shared GUI layout and state transitions |
 | `sensors/` | Radar, RTSP camera, timestamp, and GPS integrations |
 | `processing/` | Plotting, filtering, recording, PCD reading, snapshots, and playback |
-| `calibration/` | Camera timing display, OpenCV decoding, inspection, analysis and study reports |
+| `calibration/` | QR display/decoding, recording viewer, quantitative verdict, and camera intrinsics |
+| `analyze_calibration_recording.py` | Runs the recording viewer, then the saved-data verdict |
 | `convert_to_csv.py` | Recursive PCD-to-CSV export |
 | `content/` | ARS40X technical-documentation extracts |
 | `recordings/` | Generated recording data, kept outside source packages |

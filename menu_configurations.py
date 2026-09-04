@@ -3,7 +3,6 @@ from pathlib import Path
 
 import FreeSimpleGUI as sg
 
-from calibration.paths import suggested_intrinsics
 from interface_core import Configurations as BaseConfigurations
 
 
@@ -286,14 +285,7 @@ class Configurations(BaseConfigurations):
             ],
             [sg.Push(), sg.Text("145 ms / 109 ms", key="calibration_latency_status"), sg.Push()],
             [sg.HorizontalSeparator()],
-            [
-                sg.Push(),
-                sg.Text("Visible barcodes"),
-                sg.Combo((1, 2, 3, 4), default_value=3, readonly=True,
-                         key="calibration_visible_frames", size=(3, 1)),
-                sg.Text("3 leaves the next quadrant blank; 4 fills all quadrants."),
-                sg.Push(),
-            ],
+            [sg.Push(), sg.Text("QR display · 2 quadrants at a time"), sg.Push()],
             [
                 sg.Push(),
                 sg.Button(
@@ -302,7 +294,7 @@ class Configurations(BaseConfigurations):
                     button_color=("white", "green"),
                 ),
                 sg.Button(
-                    "START BARCODE CALIBRATION",
+                    "START QR CALIBRATION",
                     key="calibration_clock_start",
                     button_color=("white", "green"),
                 ),
@@ -310,7 +302,7 @@ class Configurations(BaseConfigurations):
             ],
             [
                 sg.Text(
-                    "The fullscreen barcode view records after 3 seconds and stops recording when closed.",
+                    "The fullscreen QR view records after 3 seconds and stops recording when closed.",
                     expand_x=True,
                     justification="center",
                 )
@@ -325,12 +317,6 @@ class Configurations(BaseConfigurations):
             [sg.Text("Calibration recording"),
              sg.Input(str(root / "recordings"), key="visualization_folder", expand_x=True),
              sg.FolderBrowse("SELECT", target="visualization_folder")],
-            [sg.Text("Camera intrinsics (optional)"),
-             sg.Input(suggested_intrinsics(),
-                      key="visualization_intrinsics", expand_x=True),
-             sg.FileBrowse("SELECT JSON", target="visualization_intrinsics",
-                           file_types=(("JSON files", "*.json"),))],
-            [sg.Checkbox("Start with undistorted image and decoding", key="visualization_undistorted")],
             [sg.Push(), sg.Button("OPEN CALIBRATION VISUALIZATION", key="visualization_open"), sg.Push()],
             [sg.Text("Browse recorded frames, compare decoded timestamps, and inspect the marked source of each offset.",
                      expand_x=True, justification="center")],
@@ -475,7 +461,6 @@ class Configurations(BaseConfigurations):
         self.window["calibration_clock_start"].update(
             disabled=self.calibration_clock
         )
-        self.window["calibration_visible_frames"].update(disabled=self.calibration_clock)
 
     def change_received_messages(self, message_ids):
         messages = ", ".join(f"0x{message_id:03X}" for message_id in message_ids) or "--"

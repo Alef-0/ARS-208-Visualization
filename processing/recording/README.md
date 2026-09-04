@@ -149,7 +149,7 @@ The display journal is written by the calibration display process, separately
 from camera telemetry. It starts when the fullscreen view opens, before the
 three-second camera-recording delay. The camera session names this journal;
 analysis refuses to silently fall back to legacy decoding if that required
-file is missing. Close the barcode display before analyzing, so its buffered
+file is missing. Close the QR display before analyzing, so its buffered
 tail and final summary are flushed. Interrupted recordings may have a partial
 last line; analysis ignores only an incomplete final JSON line, never an
 internal gap or reordered display frame.

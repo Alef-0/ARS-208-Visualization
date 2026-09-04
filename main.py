@@ -12,8 +12,7 @@ from queue import Empty
 import FreeSimpleGUI as sg
 
 import application_core as base
-from calibration.display.clock import DEFAULT_VISIBLE_FRAMES, run_calibration_clock
-from calibration.display.timing import DISPLAY_JOURNAL_NAME
+from calibration.display import DISPLAY_JOURNAL_NAME, run_calibration_display
 from sensors.camera.camera_gstreamer import gstreamer_main
 from sensors.radar.connection_main import create_connection_communication
 from sensors.gps.gps_connection import main as gps_main
@@ -184,20 +183,12 @@ def _start_calibration_clock(values, config, runtime):
     if process is not None and process.is_alive():
         return
 
-    try:
-        visible_frames = int(str(values.get("calibration_visible_frames", DEFAULT_VISIBLE_FRAMES)))
-        if not 1 <= visible_frames <= 4:
-            raise ValueError
-    except (TypeError, ValueError):
-        config.show_calibration_error("Visible barcodes must be a whole number between 1 and 4")
-        return
-
     recording_root = None
     if config.calibration_camera and config.connected_cam and not config.calibration_recording:
         recording_root = Path(values.get("record_folder", "")).expanduser()
         if not recording_root.is_dir():
             config.show_calibration_error(
-                "Select an existing recording destination before starting barcode calibration"
+                "Select an existing recording destination before starting QR calibration"
             )
             return
 
@@ -217,16 +208,16 @@ def _start_calibration_clock(values, config, runtime):
 
     stop_event = runtime.process_context.Event()
     process = runtime.process_context.Process(
-        target=run_calibration_clock,
+        target=run_calibration_display,
         args=(stop_event,),
-        kwargs={"journal_path": journal_path, "visible_frames": visible_frames},
+        kwargs={"journal_path": journal_path},
         name="calibration-clock",
     )
     try:
         process.start()
     except (OSError, RuntimeError) as error:
         runtime.calibration_prepared_folder = None
-        config.show_calibration_error(f"Could not start barcode display: {error}")
+        config.show_calibration_error(f"Could not start QR display: {error}")
         return
     runtime.calibration_clock_process = process
     runtime.calibration_clock_stop_event = stop_event
@@ -236,20 +227,20 @@ def _start_calibration_clock(values, config, runtime):
         runtime.calibration_recording_deadline = None
         runtime.calibration_recording_root = None
         config.window["calibration_status"].update(
-            "BARCODE ACTIVE — CAMERA 4 IS NOT OPEN, SO RECORDING WAS NOT SCHEDULED"
+            "QR ACTIVE — CAMERA 4 IS NOT OPEN, SO RECORDING WAS NOT SCHEDULED"
         )
         return
     if config.calibration_recording:
         runtime.calibration_recording_deadline = None
         runtime.calibration_recording_root = None
         config.window["calibration_status"].update(
-            "BARCODE ACTIVE — CAMERA 4 IS ALREADY RECORDING"
+            "QR ACTIVE — CAMERA 4 IS ALREADY RECORDING"
         )
         return
     assert recording_root is not None
     runtime.calibration_recording_root = str(recording_root.resolve())
     runtime.calibration_recording_deadline = time.monotonic() + 3.0
-    config.window["calibration_status"].update("BARCODE ACTIVE — RECORDING IN 3 SECONDS")
+    config.window["calibration_status"].update("QR ACTIVE — RECORDING IN 3 SECONDS")
 
 
 def _service_calibration(config, runtime, send_cam):
@@ -266,7 +257,7 @@ def _service_calibration(config, runtime, send_cam):
         config.change_calibration_clock(False)
         if process.exitcode:
             config.show_calibration_error(
-                "The barcode display stopped with an error; check the terminal output."
+                "The QR display stopped with an error; check the terminal output."
             )
 
     deadline = runtime.calibration_recording_deadline
@@ -366,19 +357,11 @@ def _start_calibration_visualization(values, config, runtime):
         sg.popup_error("Select a calibration folder containing camera_timestamps.jsonl or camera_timestamps.json",
                        title="Visualization")
         return
-    command = [sys.executable, "-m", "calibration.inspection.viewer", str(folder.resolve())]
-    intrinsics_text = str(values.get("visualization_intrinsics", "")).strip()
-    if intrinsics_text:
-        intrinsics = Path(intrinsics_text).expanduser()
-        if not intrinsics.is_file():
-            sg.popup_error("The selected intrinsic coefficients file does not exist", title="Visualization")
-            return
-        command.extend(["--intrinsics", str(intrinsics.resolve())])
-    if values.get("visualization_undistorted"):
-        if not intrinsics_text:
-            sg.popup_error("Choose a camera intrinsic JSON for undistorted viewing", title="Visualization")
-            return
-        command.append("--undistorted")
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve().parent / "analyze_calibration_recording.py"),
+        str(folder.resolve()),
+    ]
     try:
         runtime.visualization_process = subprocess.Popen(command, cwd=str(Path(__file__).resolve().parent))
     except OSError as error:
