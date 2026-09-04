@@ -1,8 +1,9 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 import FreeSimpleGUI as sg
 
-from MENU_BASE import Configurations as BaseConfigurations
+from interface_core import Configurations as BaseConfigurations
 
 
 class Configurations(BaseConfigurations):
@@ -52,6 +53,13 @@ class Configurations(BaseConfigurations):
                     sg.Text(
                         "MESSAGES: --",
                         key="received_messages",
+                        expand_x=True,
+                        justification="center",
+                    ),
+                    sg.VSep(),
+                    sg.Text(
+                        "CAMERA NTP: --",
+                        key="camera_ntp_time",
                         expand_x=True,
                         justification="center",
                     ),
@@ -210,16 +218,22 @@ class Configurations(BaseConfigurations):
                 ]], expand_x=True),
                 sg.VSep(),
                 sg.Column([[
-                    sg.Text("Recording interval (ms)"),
-                    sg.Input("250", key="camera_recording_interval", size=(9, 1), justification="right"),
-                    sg.Button("APPLY", key="recording_interval_apply"),
+                    sg.Text("Recorded frames (out of 30)"),
+                    sg.Combo(
+                        tuple(range(1, 31)),
+                        30,
+                        key="camera_recording_rate",
+                        size=(5, 1),
+                        readonly=True,
+                    ),
+                    sg.Button("APPLY", key="recording_rate_apply"),
                 ]]),
             ],
             [
                 sg.Push(),
                 sg.Text("1280 × 720", key="playback_resolution_status"),
                 sg.VSep(),
-                sg.Text("250 ms (4 FPS)", key="recording_interval_status"),
+                sg.Text("30 / 30 frames (30 FPS)", key="recording_rate_status"),
                 sg.Push(),
             ],
             [sg.HorizontalSeparator()],
@@ -264,13 +278,14 @@ class Configurations(BaseConfigurations):
                     sg.Text("Camera latency"),
                     sg.Input("145", key="camera_pipeline_latency", size=(9, 1), justification="right"),
                     sg.Text("Pipeline Adjustment (ms)"),
-                    sg.Input("145", key="camera_latency_adjustment", size=(9, 1), justification="right"),
+                    sg.Input("109", key="camera_latency_adjustment", size=(9, 1), justification="right"),
                     sg.Button("APPLY LATENCIES", key="calibration_latency_apply"),
                 ]]),
                 sg.Push(),
             ],
-            [sg.Push(), sg.Text("145 ms / 145 ms", key="calibration_latency_status"), sg.Push()],
+            [sg.Push(), sg.Text("145 ms / 109 ms", key="calibration_latency_status"), sg.Push()],
             [sg.HorizontalSeparator()],
+            [sg.Push(), sg.Text("QR display · 2 quadrants at a time"), sg.Push()],
             [
                 sg.Push(),
                 sg.Button(
@@ -279,7 +294,7 @@ class Configurations(BaseConfigurations):
                     button_color=("white", "green"),
                 ),
                 sg.Button(
-                    "START FULLSCREEN CLOCK",
+                    "START QR CALIBRATION",
                     key="calibration_clock_start",
                     button_color=("white", "green"),
                 ),
@@ -287,12 +302,26 @@ class Configurations(BaseConfigurations):
             ],
             [
                 sg.Text(
-                    "The fullscreen clock records after 3 seconds and stops recording when closed.",
+                    "The fullscreen QR view records after 3 seconds and stops recording when closed.",
                     expand_x=True,
                     justification="center",
                 )
             ],
             [sg.Push(), sg.Text("IDLE", key="calibration_status"), sg.Push()],
+        ]
+
+    @staticmethod
+    def _create_visualization_layout():
+        root = Path(__file__).resolve().parent
+        return [
+            [sg.Text("Calibration recording"),
+             sg.Input(str(root / "recordings"), key="visualization_folder", expand_x=True),
+             sg.FolderBrowse("SELECT", target="visualization_folder")],
+            [sg.Push(), sg.Button("OPEN CALIBRATION VISUALIZATION", key="visualization_open"), sg.Push()],
+            [sg.Text("Browse recorded frames, compare decoded timestamps, and inspect the marked source of each offset.",
+                     expand_x=True, justification="center")],
+            [sg.Text("Select a calibration folder to open the separate viewer.", key="visualization_status",
+                     expand_x=True, justification="center")],
         ]
 
     def create_radar_control(self):
@@ -302,6 +331,7 @@ class Configurations(BaseConfigurations):
             sg.Tab("Snapshots", self._create_snapshot_layout()),
             sg.Tab("Display", self._create_general_configurations_layout()),
             sg.Tab("Calibration", self._create_calibration_layout()),
+            sg.Tab("Visualization", self._create_visualization_layout()),
         ]]
         self.radar_control = sg.Frame(
             "General Control",
@@ -436,6 +466,24 @@ class Configurations(BaseConfigurations):
         messages = ", ".join(f"0x{message_id:03X}" for message_id in message_ids) or "--"
         self.window["received_messages"].update(f"MESSAGES: {messages}")
 
+    def change_camera_ntp(self, payload):
+        if not payload or not payload.get("available"):
+            self.window["camera_ntp_time"].update("CAMERA NTP: --")
+            return
+        seconds, nanoseconds = divmod(int(payload["ntp_unix_ns"]), 1_000_000_000)
+        try:
+            ntp_time = datetime.fromtimestamp(seconds, timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            self.window["camera_ntp_time"].update("CAMERA NTP: INVALID")
+            return
+        text = (
+            f"CAMERA {payload.get('channel', '?')} NTP: "
+            f"{ntp_time:%Y-%m-%d %H:%M:%S}.{nanoseconds // 1_000_000:03d} UTC"
+        )
+        if payload.get("offset_ms") is not None:
+            text += f" | OFFSET {float(payload['offset_ms']):+.3f} ms"
+        self.window["camera_ntp_time"].update(text)
+
     def change_snapshot_saved(self, payload):
         if (
             self.snapshot_request_id is not None
@@ -549,7 +597,7 @@ class Configurations(BaseConfigurations):
     def change_calibration_clock(self, active):
         self.calibration_clock = bool(active)
         self.window["calibration_clock_start"].update(
-            "CLOCK ACTIVE" if active else "START FULLSCREEN CLOCK",
+            "BARCODE ACTIVE" if active else "START BARCODE CALIBRATION",
             disabled=active,
             button_color=("white", "red" if active else "green"),
         )
@@ -563,8 +611,20 @@ class Configurations(BaseConfigurations):
             )
         else:
             count = payload.get("count", 0)
+            dropped = payload.get("dropped", 0)
             self.window["calibration_status"].update(
-                f"SAVED {count} CAMERA FRAMES" if count else "CAMERA 4 OPEN"
+                (
+                    f"SAVED {count} CAMERA FRAMES — DROPPED {dropped}"
+                    if count or dropped
+                    else "CAMERA 4 OPEN"
+                )
+            )
+
+    def change_camera_recording_drop(self, payload):
+        dropped = payload.get("dropped", payload.get("missing", 1))
+        if self.calibration_recording:
+            self.window["calibration_status"].update(
+                f"RECORDING CAMERA 4 — DROPPED {dropped} FRAME(S)"
             )
 
     def change_calibration_latencies(self, pipeline_latency_ms, adjustment_ms):
@@ -572,10 +632,9 @@ class Configurations(BaseConfigurations):
             f"{pipeline_latency_ms} ms / {adjustment_ms:g} ms"
         )
 
-    def change_recording_interval(self, interval_ms):
-        frames_per_second = 1000.0 / interval_ms
-        self.window["recording_interval_status"].update(
-            f"{interval_ms:g} ms ({frames_per_second:.2f} FPS)"
+    def change_recording_rate(self, frames_per_30):
+        self.window["recording_rate_status"].update(
+            f"{frames_per_30} / 30 frames ({frames_per_30} FPS)"
         )
 
     def show_calibration_error(self, message):

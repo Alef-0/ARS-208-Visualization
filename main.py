@@ -3,21 +3,22 @@ from datetime import datetime
 import math
 from pathlib import Path
 import signal
+import subprocess
+import sys
 import time
 from multiprocessing import get_context
 from queue import Empty
 
-import sitecustomize
 import FreeSimpleGUI as sg
 
-import MAIN_BASE as base
-from CALIBRATION.calibration_screen_clock import run_calibration_clock
-from CAMERA.camera_gstreamer import gstreamer_main
-from CONNECTION.connection_main import create_connection_communication
-from GPS.gps_connection import main as gps_main
+import application_core as base
+from calibration.display import DISPLAY_JOURNAL_NAME, run_calibration_display
+from sensors.camera.camera_gstreamer import gstreamer_main
+from sensors.radar.connection_main import create_connection_communication
+from sensors.gps.gps_connection import main as gps_main
 from menu_configurations import Configurations
-from CAPTURE.playback import playback_main
-from CAPTURE.snapshot_playback import snapshot_playback_main
+from processing.playback.playback import playback_main
+from processing.playback.snapshot_playback import snapshot_playback_main
 
 
 @dataclass
@@ -27,10 +28,12 @@ class RuntimeState:
     recording_stop_pending: bool = False
     calibration_recording_deadline: float | None = None
     calibration_recording_root: str | None = None
+    calibration_prepared_folder: str | None = None
     calibration_recording_folder: str | None = None
     pending_calibration_camera: dict | None = None
     calibration_clock_process: object | None = None
     calibration_clock_stop_event: object | None = None
+    visualization_process: object | None = None
     process_context: object | None = None
 
 
@@ -84,8 +87,8 @@ def _graph_range(values):
 
 def _camera_latency_settings(values):
     try:
-        pipeline_latency_ms = int(str(values.get("camera_pipeline_latency", "250")).strip())
-        adjustment_ms = float(str(values.get("camera_latency_adjustment", "250")).strip())
+        pipeline_latency_ms = int(str(values.get("camera_pipeline_latency", "145")).strip())
+        adjustment_ms = float(str(values.get("camera_latency_adjustment", "109")).strip())
     except ValueError as error:
         raise ValueError("Both camera latency values must be numeric") from error
     if pipeline_latency_ms < 0:
@@ -93,14 +96,14 @@ def _camera_latency_settings(values):
     return pipeline_latency_ms, adjustment_ms
 
 
-def _camera_recording_interval(values):
+def _camera_recording_rate(values):
     try:
-        interval_ms = float(str(values.get("camera_recording_interval", "250")).strip())
+        frames_per_30 = int(str(values.get("camera_recording_rate", "30")).strip())
     except ValueError as error:
-        raise ValueError("Camera recording interval must be numeric") from error
-    if interval_ms <= 0:
-        raise ValueError("Camera recording interval must be greater than zero")
-    return interval_ms
+        raise ValueError("Recorded camera frames must be a whole number") from error
+    if not 1 <= frames_per_30 <= 30:
+        raise ValueError("Recorded camera frames must be between 1 and 30")
+    return frames_per_30
 
 
 def _request_calibration_camera(
@@ -116,6 +119,7 @@ def _request_calibration_camera(
         runtime.pending_calibration_camera = None
         runtime.calibration_recording_deadline = None
         runtime.calibration_recording_root = None
+        runtime.calibration_prepared_folder = None
         if config.calibration_recording or runtime.calibration_recording_folder:
             send_cam.send(("record_stop", None))
         send_cam.send(("calibration_camera", {"active": False}))
@@ -123,7 +127,7 @@ def _request_calibration_camera(
 
     try:
         pipeline_latency_ms, adjustment_ms = _camera_latency_settings(values)
-        recording_interval_ms = _camera_recording_interval(values)
+        recording_frames_per_30 = _camera_recording_rate(values)
     except ValueError as error:
         config.show_calibration_error(str(error))
         return
@@ -132,7 +136,7 @@ def _request_calibration_camera(
     runtime.pending_calibration_camera = {
         "pipeline_latency_ms": pipeline_latency_ms,
         "latency_adjustment_ms": adjustment_ms,
-        "recording_interval_ms": recording_interval_ms,
+        "recording_frames_per_30": recording_frames_per_30,
     }
     if config.recording or config.recording_pending:
         base._request_recording_stop(config, runtime, send_cam)
@@ -165,11 +169,11 @@ def _maybe_open_calibration_camera(config, runtime, send_cam):
     ):
         return
     runtime.pending_calibration_camera = None
-    recording_interval_ms = payload.pop("recording_interval_ms")
+    recording_frames_per_30 = payload.pop("recording_frames_per_30")
     send_cam.send(("camera_latency_settings", payload))
     send_cam.send((
-        "camera_recording_interval",
-        {"interval_ms": recording_interval_ms},
+        "camera_recording_rate",
+        {"frames_per_30": recording_frames_per_30},
     ))
     send_cam.send(("calibration_camera", {"active": True}))
 
@@ -184,17 +188,37 @@ def _start_calibration_clock(values, config, runtime):
         recording_root = Path(values.get("record_folder", "")).expanduser()
         if not recording_root.is_dir():
             config.show_calibration_error(
-                "Select an existing recording destination before starting the clock"
+                "Select an existing recording destination before starting QR calibration"
             )
             return
 
+    # Prepare the destination before starting the display so its first marker
+    # has evidence too. JPEG capture still starts after the three-second delay.
+    journal_path = None
+    if recording_root is not None:
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            folder = recording_root.resolve() / f"calibration_camera_4_{timestamp}"
+            folder.mkdir(parents=False, exist_ok=False)
+        except OSError as error:
+            config.show_calibration_error(f"Could not create calibration recording: {error}")
+            return
+        runtime.calibration_prepared_folder = str(folder)
+        journal_path = str(folder / DISPLAY_JOURNAL_NAME)
+
     stop_event = runtime.process_context.Event()
     process = runtime.process_context.Process(
-        target=run_calibration_clock,
+        target=run_calibration_display,
         args=(stop_event,),
+        kwargs={"journal_path": journal_path},
         name="calibration-clock",
     )
-    process.start()
+    try:
+        process.start()
+    except (OSError, RuntimeError) as error:
+        runtime.calibration_prepared_folder = None
+        config.show_calibration_error(f"Could not start QR display: {error}")
+        return
     runtime.calibration_clock_process = process
     runtime.calibration_clock_stop_event = stop_event
     config.change_calibration_clock(True)
@@ -203,20 +227,20 @@ def _start_calibration_clock(values, config, runtime):
         runtime.calibration_recording_deadline = None
         runtime.calibration_recording_root = None
         config.window["calibration_status"].update(
-            "CLOCK ACTIVE — CAMERA 4 IS NOT OPEN, SO RECORDING WAS NOT SCHEDULED"
+            "QR ACTIVE — CAMERA 4 IS NOT OPEN, SO RECORDING WAS NOT SCHEDULED"
         )
         return
     if config.calibration_recording:
         runtime.calibration_recording_deadline = None
         runtime.calibration_recording_root = None
         config.window["calibration_status"].update(
-            "CLOCK ACTIVE — CAMERA 4 IS ALREADY RECORDING"
+            "QR ACTIVE — CAMERA 4 IS ALREADY RECORDING"
         )
         return
     assert recording_root is not None
     runtime.calibration_recording_root = str(recording_root.resolve())
     runtime.calibration_recording_deadline = time.monotonic() + 3.0
-    config.window["calibration_status"].update("CLOCK ACTIVE — RECORDING IN 3 SECONDS")
+    config.window["calibration_status"].update("QR ACTIVE — RECORDING IN 3 SECONDS")
 
 
 def _service_calibration(config, runtime, send_cam):
@@ -227,9 +251,14 @@ def _service_calibration(config, runtime, send_cam):
         runtime.calibration_clock_stop_event = None
         runtime.calibration_recording_deadline = None
         runtime.calibration_recording_root = None
+        runtime.calibration_prepared_folder = None
         if config.calibration_recording or runtime.calibration_recording_folder:
             send_cam.send(("record_stop", None))
         config.change_calibration_clock(False)
+        if process.exitcode:
+            config.show_calibration_error(
+                "The QR display stopped with an error; check the terminal output."
+            )
 
     deadline = runtime.calibration_recording_deadline
     if deadline is None or time.monotonic() < deadline:
@@ -237,25 +266,23 @@ def _service_calibration(config, runtime, send_cam):
     runtime.calibration_recording_deadline = None
     if not (config.calibration_camera and config.connected_cam):
         runtime.calibration_recording_root = None
+        runtime.calibration_prepared_folder = None
         config.window["calibration_status"].update(
-            "CLOCK ACTIVE — CAMERA 4 CLOSED BEFORE RECORDING"
+            "BARCODE ACTIVE — CAMERA 4 CLOSED BEFORE RECORDING"
         )
         return
 
-    root = Path(runtime.calibration_recording_root or "").expanduser()
     runtime.calibration_recording_root = None
-    try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        folder = root / f"calibration_camera_4_{timestamp}"
-        folder.mkdir(parents=False, exist_ok=False)
-    except OSError as error:
-        config.show_calibration_error(f"Could not create calibration recording: {error}")
+    prepared = runtime.calibration_prepared_folder
+    runtime.calibration_prepared_folder = None
+    if not prepared or not Path(prepared).is_dir():
+        config.show_calibration_error("The prepared calibration recording folder is missing")
         return
-
-    runtime.calibration_recording_folder = str(folder)
+    runtime.calibration_recording_folder = prepared
     send_cam.send((
         "record_start",
-        {"folders": {4: str(folder)}, "calibration": True},
+        {"folders": {4: prepared}, "calibration": True,
+         "display_journal": DISPLAY_JOURNAL_NAME},
     ))
 
 
@@ -318,11 +345,60 @@ def _request_snapshot_playback(
         )
 
 
+def _start_calibration_visualization(values, config, runtime):
+    process = runtime.visualization_process
+    if process is not None and process.poll() is None:
+        return
+    folder_text = str(values.get("visualization_folder", "")).strip()
+    folder = Path(folder_text).expanduser()
+    if not folder_text or not folder.is_dir() or not any(
+        (folder / name).is_file() for name in ("camera_timestamps.jsonl", "camera_timestamps.json")
+    ):
+        sg.popup_error("Select a calibration folder containing camera_timestamps.jsonl or camera_timestamps.json",
+                       title="Visualization")
+        return
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve().parent / "analyze_calibration_recording.py"),
+        str(folder.resolve()),
+    ]
+    try:
+        runtime.visualization_process = subprocess.Popen(command, cwd=str(Path(__file__).resolve().parent))
+    except OSError as error:
+        sg.popup_error(f"Could not start calibration visualization: {error}", title="Visualization")
+        return
+    config.window["visualization_open"].update(disabled=True)
+    config.window["visualization_status"].update("Viewer open — close its window to select another recording here.")
+
+
+def _service_visualization(config, runtime):
+    process = runtime.visualization_process
+    if process is not None and process.poll() is not None:
+        runtime.visualization_process = None
+        config.window["visualization_open"].update(disabled=False)
+        config.window["visualization_status"].update(
+            "Viewer closed." if process.returncode == 0 else f"Viewer exited with error {process.returncode}; see terminal details.")
+
+
+def _stop_visualization(runtime):
+    process = runtime.visualization_process
+    if process is not None and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1)
+
+
 def _handle_gui_event(
     event, values, config, runtime,
     send_radar, send_cam, send_gps, send_playback, send_snapshot_playback,
     shutdown_event,
 ):
+    if event == "visualization_open":
+        _start_calibration_visualization(values, config, runtime)
+        return
     if event == "snapshot_playback_toggle":
         _request_snapshot_playback(
             values, config, runtime, send_radar, send_cam, send_snapshot_playback
@@ -416,15 +492,15 @@ def _handle_gui_event(
             send_snapshot_playback,
         )
         return
-    if event == "recording_interval_apply":
+    if event == "recording_rate_apply":
         try:
-            interval_ms = _camera_recording_interval(values)
+            frames_per_30 = _camera_recording_rate(values)
         except ValueError as error:
             config.show_calibration_error(str(error))
             return
         send_cam.send((
-            "camera_recording_interval",
-            {"interval_ms": interval_ms},
+            "camera_recording_rate",
+            {"frames_per_30": frames_per_30},
         ))
         return
     if event == "calibration_clock_start":
@@ -470,6 +546,7 @@ def _apply_status_message(
         if not payload.get("active"):
             runtime.calibration_recording_deadline = None
             runtime.calibration_recording_root = None
+            runtime.calibration_prepared_folder = None
         return
     if message == "calibration_recording_state":
         state = dict(payload)
@@ -487,11 +564,17 @@ def _apply_status_message(
     if message == "camera_latency_error":
         config.show_calibration_error(payload)
         return
-    if message == "camera_recording_interval_state":
-        config.change_recording_interval(payload["interval_ms"])
+    if message == "camera_recording_rate_state":
+        config.change_recording_rate(payload["frames_per_30"])
         return
-    if message == "camera_recording_interval_error":
+    if message == "camera_recording_rate_error":
         config.show_calibration_error(payload)
+        return
+    if message == "camera_recording_drop":
+        config.change_camera_recording_drop(payload)
+        return
+    if message == "camera_ntp_time":
+        config.change_camera_ntp(payload)
         return
     if message == "camera_snapshot" and payload.get("calibration"):
         return
@@ -500,6 +583,9 @@ def _apply_status_message(
         message, payload, config, runtime,
         send_radar, send_cam, send_playback,
     )
+
+    if message == "change_cam" and not payload:
+        config.change_camera_ntp({"available": False})
 
     if message in ("change_radar", "change_cam"):
         _maybe_start_snapshot_playback(config, runtime, send_snapshot_playback)
@@ -544,6 +630,7 @@ def _run_event_loop(
             send_radar, send_cam, send_playback, send_snapshot_playback,
         )
         _service_calibration(config, runtime, send_cam)
+        _service_visualization(config, runtime)
 
 
 def _stop_calibration_clock(runtime):
@@ -614,6 +701,7 @@ def main():
         )
     finally:
         _stop_calibration_clock(runtime)
+        _stop_visualization(runtime)
         base._shutdown(
             processes,
             (send_radar, send_cam, send_gps, send_playback, send_snapshot_playback),

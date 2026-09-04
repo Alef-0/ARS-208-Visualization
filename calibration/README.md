@@ -1,0 +1,182 @@
+# QR camera timing calibration
+
+This folder contains the QR display, recording inspection, and quantitative
+analysis used to estimate the camera timing correction. The measured target is
+the host-anchored camera PTS minus the newest decoded QR marker matched to the
+display journal.
+
+That target is a software timing reference. It is not a direct measurement of
+physical exposure time, and it does not by itself prove camera-to-radar
+alignment.
+
+## Components
+
+- `display.py` creates one persistent Pygame canvas. It advances timestamped QR
+  codes clockwise through the four quadrants at 60 Hz by default, keeps two QR
+  codes visible, underlines the newest code, and records presentation timing in
+  `display_timestamps.jsonl`. Press `P` to pause or resume.
+- `qr.py` creates the 12-digit monotonic-millisecond QR payloads and provides
+  QReader decoding, quadrant retries, and clockwise ordering.
+- `recording_display.py` opens the recording inspection window. It decodes the
+  undistorted frames, allows PTS, NTP, and QR values to be corrected, validates
+  the displayed sequence and its following replacement, and labels suspect or
+  unknown timing evidence. The default undistortion alpha is `0.25`.
+- `quantitative_analysis.py` compares correction strategies on clean evidence,
+  writes the verdict, and creates all graphs with Matplotlib in both PNG and SVG
+  formats.
+- `intrinsics.json` contains the default camera matrix, distortion coefficients,
+  and calibration image size used for undistortion.
+- `../analyze_calibration_recording.py` is the normal entry point. It opens the
+  recording window first and runs the quantitative analyzer after the window
+  has created its two source files and closed.
+
+## Recording and analysis workflow
+
+1. Start the QR calibration from the application. The recording begins after
+   the configured three-second delay. Keep the calibration display visible for
+   the complete recording, then close it so its journal is flushed.
+2. Open **Visualization** for the recording, or start the root analyzer from a
+   terminal.
+3. Review the automatically decoded frames. If scanning stops on invalid
+   evidence, correct the editable PTS, NTP, or QR values only when the recording
+   visibly supports the correction.
+4. Select **Create analysis files**. The button creates only
+   `calibration_analysis.json` and `calibration_frames.csv` in a sibling folder
+   named `<recording>_analysis`.
+5. Close the inspection window. The root analyzer then creates the quantitative
+   verdict and graphs from those saved files.
+
+Run the complete workflow with:
+
+```bash
+python3 analyze_calibration_recording.py /path/to/recording
+```
+
+Use another intrinsic calibration when needed:
+
+```bash
+python3 analyze_calibration_recording.py /path/to/recording \
+  --intrinsics /path/to/intrinsics.json
+```
+
+To regenerate only the verdict and graphs from existing analysis files:
+
+```bash
+python3 -m calibration.quantitative_analysis /path/to/recording_analysis
+```
+
+The QR display can also be started directly:
+
+```bash
+python3 -m calibration.display
+python3 -m calibration.display --windowed --width 1280 --height 720
+```
+
+## Required recording inputs
+
+The recording folder must contain:
+
+- captured image files referenced by the camera journal;
+- `camera_timestamps.jsonl` or `camera_timestamps.json`;
+- `display_timestamps.jsonl` from the matching QR display session.
+
+`camera_timing_session.json` is optional, but it is needed when camera PTS must
+be converted to the host monotonic clock through a recorded stream epoch.
+
+The analyzer reads source images without modifying them. Undistortion is applied
+only to the in-memory image used for inspection and decoding.
+
+## Quantitative strategies
+
+Only rows marked `accepted_clean` with `Clean` replacement timing and a finite
+offset are used. The first 70% of clean frames is the training portion; the
+later 30% is a chronological holdout that is not used to fit parameters.
+
+The report compares five strategies:
+
+- **Current fixed 109 ms** uses the existing correction without fitting.
+- **Calibrated fixed median** uses the training median. A median minimizes total
+  absolute error and is resistant to occasional large offsets.
+- **Calibrated fixed mean** uses the training mean. A mean minimizes squared
+  error but is more sensitive to outliers.
+- **PTS-step median** groups the current camera PTS interval into 5 ms buckets
+  and uses the training median for the matching bucket.
+- **Six-step PTS history** is a least-squares linear regression using the current
+  PTS interval and the five previous intervals. It does not use QR values,
+  future frames, display index, or elapsed recording time as predictors.
+
+For each frame, the signed residual is:
+
+```text
+observed QR-derived offset - predicted correction
+```
+
+The **absolute residual** removes its direction:
+
+```text
+abs(observed QR-derived offset - predicted correction)
+```
+
+For example, residuals of `+6 ms` and `-6 ms` both have an absolute residual of
+`6 ms`. MAE is the average absolute residual. The P95 absolute residual is the
+value met or improved upon by 95% of evaluated frames, so it exposes uncommon
+large errors that an average can hide.
+
+## Generated files
+
+The inspection window creates:
+
+- `calibration_analysis.json` — complete per-frame evidence and scan summary;
+- `calibration_frames.csv` — the same per-frame evidence in tabular form.
+
+The quantitative analyzer then creates:
+
+- `calibration_verdict.md` — readable recommendation and strategy comparison;
+- `calibration_verdict.json` — metrics, fitted parameters, provenance hashes,
+  histogram policy, and machine-readable verdict;
+- `calibration_strategy_predictions.csv` — observed offsets, split labels, and
+  every strategy prediction for each clean frame;
+- `calibration_offset_timeline.png` and `.svg` — clean and excluded offsets over
+  frame order;
+- `calibration_residual_cdf.png` and `.svg` — absolute-residual distributions on
+  the chronological holdout;
+- `calibration_offset_histogram.png` and `.svg` — the clean observed-offset
+  distribution;
+- `calibration_fixed_residual_histogram.png` and `.svg` — one panel per fixed
+  strategy;
+- `calibration_pts_residual_histogram.png` and `.svg` — one panel per PTS-based
+  strategy.
+
+Histogram panels never overlap strategies. Each panel uses the full range of
+its own data and Freedman-Diaconis bin spacing constrained to 8–18 succinct
+bins. Residual ranges are symmetric around zero.
+
+## Interpreting the verdict safely
+
+- Exclude timing-suspect rows and rows whose following QR replacement timing is
+  unknown. A missing replacement is not evidence of a clean transition.
+- A recommended correction replaces the existing `109 ms` subtraction; it is
+  never added to it.
+- The chronological holdout tests a later portion of the same recording. It is
+  useful for comparison, but it is not independent session validation.
+- Do not enable a learned dynamic correction from one recording. Preselect the
+  strategy and confirm it on a later, independently recorded calibration first.
+- Keep the software-marker result separate from claims about physical exposure
+  timing, RTSP transport delay, or radar alignment.
+
+## Dependencies and checks
+
+The workflow uses OpenCV, Pillow, Pygame, NumPy, `qrcode`, `qreader`, and
+Matplotlib. The quantitative entry point checks for an installed NumPy and
+Matplotlib pair that can import together before rendering graphs.
+
+Run the focused non-visual checks with:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  python3 -m pytest -q tests/test_qr_calibration.py tests/test_calibration_workflow.py
+```
+
+These checks validate data handling and orchestration. Confirm the real display,
+camera framing, editable controls, and generated graph readability manually on
+the target system.

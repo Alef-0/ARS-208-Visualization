@@ -1,9 +1,13 @@
 FreeSimpleGUI
+Pillow
 bitstring
+matplotlib
 numpy
 opencv-python
-pytesseract
 pypcd4
 PyGObject
+pygame
+qrcode
+qreader
 requests
 urllib3
